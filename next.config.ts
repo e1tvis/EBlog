@@ -42,7 +42,10 @@ const cspHeader = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["sharp", "exifr"],
+  serverExternalPackages: ["sharp", "exifr", "@prisma/client", "prisma"],
+  outputFileTracingIncludes: {
+    "/*": ["./node_modules/.prisma/client/**/*"],
+  },
 
   images: {
     // /api/photos/thumbnail already performs server-side Sharp resizing and

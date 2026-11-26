@@ -9,12 +9,17 @@ import ThemeSwitcher from "./ThemeSwitcher";
 export default async function Navbar() {
     const session = await getSession();
     const isOwner = checkIsOwner(session);
-    const userRole = session?.user?.email
-        ? await getCachedUserRole(session.user.email)
-        : null;
+    let userRole: { name: string; color: string } | null = null;
+    if (session?.user?.email) {
+        try {
+            userRole = await getCachedUserRole(session.user.email);
+        } catch (err) {
+            console.error("[Navbar] Failed to load user role:", err);
+        }
+    }
 
     return (
-        <nav className="sticky top-0 z-50 w-full glass-card border-x-0 border-t-0 py-2.5 px-6 md:px-10 flex justify-between items-center animate-in">
+        <nav className="sticky top-0 z-50 w-full glass-card border-x-0 border-b-0 py-2.5 px-6 md:px-10 flex justify-between items-center animate-in">
             <div className="flex items-center gap-5">
                 <Link href="/" className="group flex items-center gap-2">
                     <div className="w-7 h-7 rounded-lg bg-white flex items-center justify-center text-black font-bold text-sm group-hover:scale-110 transition duration-300">
@@ -58,7 +63,7 @@ export default async function Navbar() {
                     </>
                 ) : (
                     <Link
-                        href="/api/auth/signin"
+                        href="/signin"
                         className="text-xs font-medium bg-white text-black px-4 py-1.5 rounded-full hover:bg-zinc-200 transition"
                     >
                         Sign In
