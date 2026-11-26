@@ -12,20 +12,25 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { roleId, albumId, albumIds } = await req.json();
-    const ids: string[] = albumIds || (albumId ? [albumId] : []);
-    if (!roleId || ids.length === 0) {
-        return NextResponse.json({ error: "roleId and albumId(s) required" }, { status: 400 });
+    try {
+        const { roleId, albumId, albumIds } = await req.json();
+        const ids: string[] = albumIds || (albumId ? [albumId] : []);
+        if (!roleId || ids.length === 0) {
+            return NextResponse.json({ error: "roleId and albumId(s) required" }, { status: 400 });
+        }
+
+        await prisma.roleAlbumAccess.createMany({
+            data: ids.map((id: string) => ({ roleId, albumId: id })),
+            skipDuplicates: true,
+        });
+
+        revalidateTag('roles', { expire: 0 });
+        revalidateTag('albums', { expire: 0 });
+        return NextResponse.json({ success: true, count: ids.length });
+    } catch (error) {
+        console.error("Grant role album access error:", error);
+        return NextResponse.json({ error: "Failed to grant album access" }, { status: 500 });
     }
-
-    await prisma.roleAlbumAccess.createMany({
-        data: ids.map((id: string) => ({ roleId, albumId: id })),
-        skipDuplicates: true,
-    });
-
-    revalidateTag('roles', { expire: 0 });
-    revalidateTag('albums', { expire: 0 });
-    return NextResponse.json({ success: true, count: ids.length });
 }
 
 // DELETE revoke a role's access to an album
@@ -35,10 +40,17 @@ export async function DELETE(req: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { id } = await req.json();
-    await prisma.roleAlbumAccess.delete({ where: { id } });
+    try {
+        const { id } = await req.json();
+        if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
-    revalidateTag('roles', { expire: 0 });
-    revalidateTag('albums', { expire: 0 });
-    return NextResponse.json({ success: true });
+        await prisma.roleAlbumAccess.deleteMany({ where: { id } });
+
+        revalidateTag('roles', { expire: 0 });
+        revalidateTag('albums', { expire: 0 });
+        return NextResponse.json({ success: true });
+    } catch (error) {
+        console.error("Revoke role album access error:", error);
+        return NextResponse.json({ error: "Failed to revoke album access" }, { status: 500 });
+    }
 }

@@ -1,4 +1,3 @@
-/* eslint-disable */
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/auth";
@@ -7,17 +6,6 @@ import { revalidateTag } from "next/cache";
 import { getCachedRoles } from "@/lib/db";
 import { isOwner } from "@/lib/auth-utils";
 
-// Auto-create the viewer role if it doesn't exist
-async function ensureViewerRole() {
-    let viewer = await prisma.role.findUnique({ where: { name: 'viewer' } });
-    if (!viewer) {
-        viewer = await prisma.role.create({
-            data: { name: 'viewer', color: '#71717a' }, // zinc-500
-        });
-    }
-    return viewer;
-}
-
 // GET all roles with assignments and album access
 export async function GET() {
     const session = await getServerSession(authOptions);
@@ -25,7 +13,6 @@ export async function GET() {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Cached: 60s TTL, tagged "roles"
     const roles = await getCachedRoles();
     return NextResponse.json(roles);
 }
@@ -37,22 +24,36 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { name, color, durationDays, isPayAsYouGo, photoUnlockPrice, blurPreviewCount } = await req.json();
-    if (!name) return NextResponse.json({ error: "Name required" }, { status: 400 });
+    try {
+        const { name, color, durationDays, isPayAsYouGo, photoUnlockPrice, blurPreviewCount } = await req.json();
+        if (!name || !String(name).trim()) {
+            return NextResponse.json({ error: "Name required" }, { status: 400 });
+        }
 
-    const role = await prisma.role.create({
-        data: {
-            name: name.toLowerCase(),
-            color: color || "#6366f1",
-            durationDays: durationDays ? parseInt(durationDays, 10) : null,
-            isPayAsYouGo: Boolean(isPayAsYouGo),
-            photoUnlockPrice: photoUnlockPrice ? parseFloat(photoUnlockPrice) : null,
-            blurPreviewCount: blurPreviewCount ? parseInt(blurPreviewCount, 10) : null
-        },
-    });
+        const parsedDuration = durationDays ? parseInt(String(durationDays), 10) : null;
+        const parsedPrice = photoUnlockPrice ? parseFloat(String(photoUnlockPrice)) : null;
+        const parsedPreview = blurPreviewCount ? parseInt(String(blurPreviewCount), 10) : null;
 
-    revalidateTag('roles', { expire: 0 });
-    return NextResponse.json(role);
+        const role = await prisma.role.create({
+            data: {
+                name: String(name).trim().toLowerCase(),
+                color: color || "#6366f1",
+                durationDays: parsedDuration !== null && !Number.isNaN(parsedDuration) ? parsedDuration : null,
+                isPayAsYouGo: Boolean(isPayAsYouGo),
+                photoUnlockPrice: parsedPrice !== null && !Number.isNaN(parsedPrice) ? parsedPrice : null,
+                blurPreviewCount: parsedPreview !== null && !Number.isNaN(parsedPreview) ? parsedPreview : null,
+            },
+        });
+
+        revalidateTag('roles', { expire: 0 });
+        return NextResponse.json(role);
+    } catch (error: unknown) {
+        if ((error as { code?: string })?.code === 'P2002') {
+            return NextResponse.json({ error: "A role with that name already exists" }, { status: 409 });
+        }
+        console.error("Create role error:", error);
+        return NextResponse.json({ error: "Failed to create role" }, { status: 500 });
+    }
 }
 
 // DELETE a role (but never the viewer role)
@@ -62,16 +63,23 @@ export async function DELETE(req: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { id } = await req.json();
+    try {
+        const { id } = await req.json();
+        if (!id) return NextResponse.json({ error: "Role id required" }, { status: 400 });
 
-    const role = await prisma.role.findUnique({ where: { id } });
-    if (role?.name === 'viewer') {
-        return NextResponse.json({ error: "Cannot delete the built-in viewer role" }, { status: 400 });
+        const role = await prisma.role.findUnique({ where: { id } });
+        if (!role) return NextResponse.json({ error: "Role not found" }, { status: 404 });
+        if (role.name === 'viewer') {
+            return NextResponse.json({ error: "Cannot delete the built-in viewer role" }, { status: 400 });
+        }
+
+        await prisma.role.delete({ where: { id } });
+
+        revalidateTag('roles', { expire: 0 });
+        revalidateTag('albums', { expire: 0 });
+        return NextResponse.json({ success: true });
+    } catch (error) {
+        console.error("Delete role error:", error);
+        return NextResponse.json({ error: "Failed to delete role" }, { status: 500 });
     }
-
-    await prisma.role.delete({ where: { id } });
-
-    revalidateTag('roles', { expire: 0 });
-    revalidateTag('albums', { expire: 0 });
-    return NextResponse.json({ success: true });
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 interface AppNotification {
@@ -10,12 +11,16 @@ interface AppNotification {
     actorName?: string;
     createdAt: string;
     chatId?: string;
+    postId?: string;
+    photoId?: string;
+    targetUrl?: string | null;
 }
 
 export default function NotificationBell() {
     const [notifications, setNotifications] = useState<AppNotification[]>([]);
     const [isOpen, setIsOpen] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
+    const router = useRouter();
 
     const fetchNotifications = async () => {
         try {
@@ -59,6 +64,20 @@ export default function NotificationBell() {
         }
     };
 
+    const handleNotificationClick = async (n: AppNotification) => {
+        if (!n.read) {
+            await markAsRead(n.id);
+        }
+        setIsOpen(false);
+        if (n.type === 'message' && n.chatId) {
+            router.push(`/messages#${n.chatId}`);
+        } else if (n.type === 'post' || (n.type === 'like' && n.postId)) {
+            router.push('/feed');
+        } else if (n.targetUrl) {
+            router.push(n.targetUrl);
+        }
+    };
+
     const unreadCount = notifications.filter(n => !n.read).length;
 
     const getIcon = (type: string) => {
@@ -75,7 +94,7 @@ export default function NotificationBell() {
 
     const getMessage = (n: AppNotification) => {
         switch (n.type) {
-            case 'like': return 'liked your photo';
+            case 'like': return n.postId ? 'liked your post' : 'liked your photo';
             case 'comment': return 'commented on a photo';
             case 'reply': return 'replied to your comment';
             case 'tag': return 'mentioned you in a comment';
@@ -113,7 +132,7 @@ export default function NotificationBell() {
                             </button>
                         )}
                     </div>
-                    
+
                     <div className="max-h-[60vh] overflow-y-auto custom-scrollbar">
                         {notifications.length === 0 ? (
                             <div className="p-8 text-center text-sm text-zinc-500">
@@ -121,7 +140,12 @@ export default function NotificationBell() {
                             </div>
                         ) : (
                             notifications.map(n => (
-                                <div key={n.id} className={`flex gap-3 p-4 border-b border-white/5 hover:bg-white/5 transition group ${!n.read ? 'bg-white/5' : ''}`}>
+                                <button
+                                    key={n.id}
+                                    type="button"
+                                    onClick={() => handleNotificationClick(n)}
+                                    className={`w-full flex gap-3 p-4 border-b border-white/5 hover:bg-white/5 transition group text-left ${!n.read ? 'bg-white/5' : ''}`}
+                                >
                                     <div className="text-xl shrink-0 mt-1">{getIcon(n.type)}</div>
                                     <div className="flex-1 min-w-0 flex flex-col items-start text-left">
                                         <p className="text-sm text-zinc-300 leading-snug">
@@ -136,7 +160,7 @@ export default function NotificationBell() {
                                             <span className="w-2 h-2 rounded-full bg-blue-500"></span>
                                         </div>
                                     )}
-                                </div>
+                                </button>
                             ))
                         )}
                     </div>

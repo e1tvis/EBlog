@@ -7,9 +7,13 @@ const HASH_SIZE = 8; // 8x8 = 64-bit hash
  * Returns a 16-character hex string (64 bits).
  */
 export async function generatePHash(input: Buffer | Uint8Array): Promise<string> {
-    // Resize to (HASH_SIZE * 4) for DCT, convert to greyscale
+    // Rotate by EXIF orientation, strip alpha channel so raw greyscale is guaranteed
+    // 1 byte per pixel (RGBA -> greyscale without removeAlpha produces 2 channels!),
+    // resize to (HASH_SIZE * 4) for DCT, and convert to greyscale.
     const size = HASH_SIZE * 4;
     const raw = await sharp(Buffer.from(input))
+        .rotate()
+        .removeAlpha()
         .resize(size, size, { fit: 'fill' })
         .greyscale()
         .raw()

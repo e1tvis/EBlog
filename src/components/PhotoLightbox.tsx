@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useCallback, useState, useRef } from "react";
+import { toast } from "sonner";
 import { Photo } from "./PhotoGrid";
 import CommentsPanel from "./CommentsPanel";
 import MapPinModal from "./MapPinModal";
@@ -23,7 +24,7 @@ function formatBytes(bytes: number): string {
 
 export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, onNavigate, onPhotoUpdate }: PhotoLightboxProps) {
     const photo = photos[currentIndex];
-    const isVideo = photo.mediaType === 'video';
+    const isVideo = photo?.mediaType === 'video';
     const hasPrev = currentIndex > 0;
     const hasNext = currentIndex < photos.length - 1;
     const [zoom, setZoom] = useState(1);
@@ -38,17 +39,17 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
     const touchMoveRef = useRef<{ x: number, y: number } | null>(null);
 
     // Caption state
-    const [caption, setCaption] = useState(photo.caption ?? "");
+    const [caption, setCaption] = useState(photo?.caption ?? "");
     const [captionSaving, setCaptionSaving] = useState(false);
     const captionRef = useRef<HTMLTextAreaElement>(null);
 
     // Like state
-    const [liked, setLiked] = useState(photo.liked);
-    const [likeCount, setLikeCount] = useState(photo.likeCount);
+    const [liked, setLiked] = useState(photo?.liked ?? false);
+    const [likeCount, setLikeCount] = useState(photo?.likeCount ?? 0);
     const [likePulsing, setLikePulsing] = useState(false);
 
     // Lazy full URL loading (for R2 photos without pre-signed URLs)
-    const [resolvedUrl, setResolvedUrl] = useState<string | null>(photo.fullUrl || null);
+    const [resolvedUrl, setResolvedUrl] = useState<string | null>(photo?.fullUrl || null);
     const [loadingUrl, setLoadingUrl] = useState(false);
     const urlCache = useRef<Map<string, string>>(new Map());
 
@@ -71,8 +72,8 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
         const handleFullscreen = () => {
             if (isVideo && videoRef.current) {
                 setIsFullscreen(
-                    !!document.fullscreenElement || 
-                    (videoRef.current as any).webkitDisplayingFullscreen || 
+                    !!document.fullscreenElement ||
+                    (videoRef.current as any).webkitDisplayingFullscreen ||
                     false
                 );
             } else {
@@ -124,6 +125,8 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
     };
 
     useEffect(() => {
+        if (!photo) return;
+        let cancelled = false;
         setZoom(1);
         setPan({ x: 0, y: 0 });
         setNaturalSize({ w: 0, h: 0 });
@@ -132,7 +135,6 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
         setLikeCount(photo.likeCount);
         setThumbnailSaved(false);
 
-        // Resolve full URL if not provided (for videos, ALWAYS fetch a fresh timestamp-busted pre-signed URL to prevent CORS/tainted-canvas caching)
         if (photo.fullUrl && !isVideo) {
             setResolvedUrl(photo.fullUrl);
             setLoadingUrl(false);
@@ -145,31 +147,56 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
             fetch(`/api/photos/download?key=${encodeURIComponent(photo.r2Key)}&provider=${photo.storageProvider}&t=${Date.now()}`)
                 .then(r => r.json())
                 .then(data => {
-                    if (!isVideo) {
-                        urlCache.current.set(photo.r2Key, data.url);
+                    if (cancelled) return;
+                    if (data.url) {
+                        if (!isVideo) {
+                            urlCache.current.set(photo.r2Key, data.url);
+                        }
+                        setResolvedUrl(data.url);
+                    } else {
+                        setResolvedUrl(photo.thumbnailUrl);
                     }
-                    setResolvedUrl(data.url);
                 })
-                .catch(() => setResolvedUrl(photo.thumbnailUrl))
-                .finally(() => setLoadingUrl(false));
+                .catch(() => {
+                    if (!cancelled) setResolvedUrl(photo.thumbnailUrl);
+                })
+                .finally(() => {
+                    if (!cancelled) setLoadingUrl(false);
+                });
         }
+
+        return () => {
+            cancelled = true;
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentIndex]);
+    }, [currentIndex, photo?.id]);
 
     const handleKeyDown = useCallback((e: KeyboardEvent) => {
+        const target = e.target as HTMLElement | null;
+        const isEditable =
+            target instanceof HTMLInputElement ||
+            target instanceof HTMLTextAreaElement ||
+            Boolean(target?.isContentEditable);
+
         if (e.key === 'Escape') {
-            if (document.fullscreenElement) {
+            if (showMapPin) {
+                setShowMapPin(false);
+            } else if (document.fullscreenElement) {
                 document.exitFullscreen?.();
             } else {
                 onClose();
             }
+            return;
         }
+
+        if (isEditable || showMapPin) return;
+
         if (e.key === 'ArrowLeft' && hasPrev) onNavigate(currentIndex - 1);
         if (e.key === 'ArrowRight' && hasNext) onNavigate(currentIndex + 1);
-        if (e.key === '+' || e.key === '=') setZoom(z => Math.min(z + 0.5, 7.5));
-        if (e.key === '-') setZoom(z => Math.max(z - 0.5, 1));
-        if (e.key === '0') { setZoom(1); setPan({ x: 0, y: 0 }); }
-    }, [onClose, onNavigate, currentIndex, hasPrev, hasNext]);
+        if (!isVideo && (e.key === '+' || e.key === '=')) setZoom(z => Math.min(z + 0.5, 7.5));
+        if (!isVideo && e.key === '-') setZoom(z => Math.max(z - 0.5, 1));
+        if (!isVideo && e.key === '0') { setZoom(1); setPan({ x: 0, y: 0 }); }
+    }, [onClose, onNavigate, currentIndex, hasPrev, hasNext, showMapPin, isVideo]);
 
     useEffect(() => {
         document.addEventListener('keydown', handleKeyDown);
@@ -180,9 +207,10 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
         };
     }, [handleKeyDown]);
 
-
+    if (!photo) return null;
 
     const handleWheel = (e: React.WheelEvent) => {
+        if (isVideo) return;
         e.preventDefault();
         const delta = e.deltaY > 0 ? -0.3 : 0.3;
         setZoom(z => {
@@ -210,6 +238,7 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
     const handleMouseUp = () => setDragging(false);
 
     const handleDoubleClick = () => {
+        if (isVideo) return;
         if (zoom > 1) {
             setZoom(1);
             setPan({ x: 0, y: 0 });
@@ -256,13 +285,10 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
         const deltaX = touchMoveRef.current.x - touchStartRef.current.x;
         const deltaY = touchMoveRef.current.y - touchStartRef.current.y;
 
-        // Ensure swipe is mostly horizontal and significant enough (e.g. 50px)
         if (Math.abs(deltaX) > 50 && Math.abs(deltaX) > Math.abs(deltaY)) {
             if (deltaX > 0 && hasPrev) {
-                // Swipe right -> Previous
                 onNavigate(currentIndex - 1);
             } else if (deltaX < 0 && hasNext) {
-                // Swipe left -> Next
                 onNavigate(currentIndex + 1);
             }
         }
@@ -276,12 +302,18 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
         if (trimmed === (photo.caption ?? "")) return;
         setCaptionSaving(true);
         try {
-            await fetch(`/api/photos/${encodeURIComponent(photo.id)}/caption`, {
+            const res = await fetch(`/api/photos/${encodeURIComponent(photo.id)}/caption`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ caption: trimmed || null }),
             });
-            onPhotoUpdate({ ...photo, caption: trimmed || null });
+            if (res.ok) {
+                onPhotoUpdate({ ...photo, caption: trimmed || null });
+            } else {
+                toast.error("Failed to save caption");
+            }
+        } catch {
+            toast.error("Failed to save caption");
         } finally {
             setCaptionSaving(false);
         }
@@ -292,10 +324,12 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
             e.preventDefault();
             captionRef.current?.blur();
         }
-        e.stopPropagation(); // prevent lightbox key handlers
+        e.stopPropagation();
     };
 
     const handleLike = async () => {
+        const prevLiked = liked;
+        const prevCount = likeCount;
         const newLiked = !liked;
         const newCount = likeCount + (newLiked ? 1 : -1);
         setLiked(newLiked);
@@ -304,25 +338,34 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
         setTimeout(() => setLikePulsing(false), 300);
         onPhotoUpdate({ ...photo, liked: newLiked, likeCount: newCount, caption });
 
-        await fetch(`/api/photos/${encodeURIComponent(photo.id)}/like`, { method: "POST" });
+        try {
+            const res = await fetch(`/api/photos/${encodeURIComponent(photo.id)}/like`, { method: "POST" });
+            if (!res.ok) {
+                setLiked(prevLiked);
+                setLikeCount(prevCount);
+                onPhotoUpdate({ ...photo, liked: prevLiked, likeCount: prevCount, caption });
+                toast.error("Failed to update like");
+            }
+        } catch {
+            setLiked(prevLiked);
+            setLikeCount(prevCount);
+            onPhotoUpdate({ ...photo, liked: prevLiked, likeCount: prevCount, caption });
+            toast.error("Failed to update like");
+        }
     };
 
     const resW = photo.width || naturalSize.w;
     const resH = photo.height || naturalSize.h;
 
-    // ── Capture current video frame as thumbnail ─────────────────────
     const handleSetThumbnail = async () => {
         const video = videoRef.current;
         if (!video) return;
 
         setThumbnailSaving(true);
         try {
-            // Use the displayed video dimensions (accounts for rotation metadata)
-            // videoWidth/videoHeight are the raw encoded dimensions before rotation
             const displayW = video.clientWidth;
             const displayH = video.clientHeight;
 
-            // Cap the maximum canvas dimension to prevent massive payload sizes
             let targetW = displayW * 2;
             let targetH = displayH * 2;
             const MAX_DIMENSION = 1200;
@@ -339,17 +382,14 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
             if (!ctx) throw new Error('Canvas not supported');
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-            // Validate the frame isn't blank
             const sample = ctx.getImageData(0, 0, Math.min(10, canvas.width), Math.min(10, canvas.height));
             const isBlank = sample.data.every((v, i) => i % 4 === 3 ? true : v === 0);
             if (isBlank) {
                 throw new Error('Captured frame is blank — try pausing the video first and waiting a moment');
             }
 
-            // Export as JPEG base64
             const frameData = canvas.toDataURL('image/jpeg', 0.95);
 
-            // Upload to the server
             const res = await fetch(`/api/photos/${encodeURIComponent(photo.id)}/set-thumbnail`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -365,256 +405,270 @@ export default function PhotoLightbox({ photos, currentIndex, isOwner, onClose, 
             setTimeout(() => setThumbnailSaved(false), 3000);
         } catch (err: any) {
             console.error('Set thumbnail failed:', err);
-            alert(`Failed to set thumbnail: ${err.message}`);
+            toast.error(`Failed to set thumbnail: ${err.message}`);
         } finally {
             setThumbnailSaving(false);
         }
     };
+
+    const hasCoordinates = typeof photo.lat === 'number' && typeof photo.lng === 'number';
 
     return (
         <div ref={lightboxRef} className="always-dark fixed inset-0 z-[200] flex bg-black/98" onClick={onClose}>
             <div className="flex-1 flex flex-col min-w-0">
                 {/* Top bar */}
                 <div className="flex items-center justify-between px-5 py-3 shrink-0 relative z-10" onClick={e => e.stopPropagation()}>
-                <div className="flex items-center gap-4">
-                    <p className="text-xs text-zinc-500 font-mono">{currentIndex + 1} / {photos.length}</p>
-                    {zoom > 1 && (
-                        <p className="text-[10px] text-zinc-600 font-mono">{Math.round(zoom * 100)}%</p>
-                    )}
-                </div>
-                <div className="flex items-center gap-2">
-                    {/* Heart/Like button */}
-                    <button
-                        onClick={handleLike}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border border-white/10 hover:bg-white/5 transition"
-                        title="Like"
-                    >
-                        <svg
-                            width="14" height="14" viewBox="0 0 24 24"
-                            fill={liked ? "#ef4444" : "none"}
-                            stroke={liked ? "#ef4444" : "currentColor"}
-                            strokeWidth="2" strokeLinecap="round"
-                            style={{
-                                transition: "transform 0.15s ease",
-                                transform: likePulsing ? "scale(1.35)" : "scale(1)",
-                                color: liked ? "#ef4444" : "#71717a",
-                            }}
-                        >
-                            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                        </svg>
-                        {likeCount > 0 && (
-                            <span className="text-[10px] font-bold" style={{ color: liked ? "#ef4444" : "#71717a" }}>
-                                {likeCount}
-                            </span>
+                    <div className="flex items-center gap-4">
+                        <p className="text-xs text-zinc-500 font-mono">{currentIndex + 1} / {photos.length}</p>
+                        {zoom > 1 && (
+                            <p className="text-[10px] text-zinc-600 font-mono">{Math.round(zoom * 100)}%</p>
                         )}
-                    </button>
-
-                    <button
-                        onClick={() => setShowComments(!showComments)}
-                        className={`w-8 h-8 rounded-full border flex items-center justify-center transition ml-1 ${showComments ? 'bg-white text-black border-white' : 'border-white/10 text-zinc-500 hover:text-white hover:bg-white/10'}`}
-                        title="Comments"
-                    >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                        </svg>
-                    </button>
-
-                    <button
-                        onClick={() => setZoom(z => Math.min(z + 0.5, 7.5))}
-                        className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/10 transition"
-                        title="Zoom in (+)"
-                    >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-                    </button>
-                    <button
-                        onClick={() => setZoom(z => { const n = Math.max(z - 0.5, 1); if (n === 1) setPan({ x: 0, y: 0 }); return n; })}
-                        className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/10 transition"
-                        title="Zoom out (-)"
-                    >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /></svg>
-                    </button>
-                    <button
-                        onClick={handleToggleFullscreen}
-                        className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/10 transition text-sm font-bold ml-1"
-                        title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
-                    >
-                        {isFullscreen ? (
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" /></svg>
-                        ) : (
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" /></svg>
-                        )}
-                    </button>
-                    <button
-                        onClick={onClose}
-                        className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/10 transition ml-2"
-                        title="Close (Esc)"
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                    </button>
-                </div>
-            </div>
-
-            {/* Image area */}
-            <div
-                className="flex-1 flex items-center justify-center relative min-h-0 overflow-hidden select-none"
-                onWheel={handleWheel}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
-                onDoubleClick={handleDoubleClick}
-                onTouchStart={handleTouchStart}
-                onTouchMove={handleTouchMove}
-                onTouchEnd={handleTouchEnd}
-                onClick={e => e.stopPropagation()}
-                style={{ cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default' }}
-            >
-                {hasPrev && zoom <= 1 && (
-                    <button
-                        onClick={(e) => { e.stopPropagation(); onNavigate(currentIndex - 1); }}
-                        className="absolute left-3 z-10 w-10 h-10 rounded-full bg-black/60 border border-white/10 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 transition"
-                    >
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="m15 18-6-6 6-6" /></svg>
-                    </button>
-                )}
-
-                {loadingUrl ? (
-                    <div className="flex flex-col items-center gap-3">
-                        <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                        <p className="text-[10px] text-zinc-600 font-mono">Loading full resolution…</p>
                     </div>
-                ) : isVideo ? (
-                    <video
-                        ref={videoRef}
-                        src={resolvedUrl || undefined}
-                        crossOrigin="anonymous"
-                        controls
-                        autoPlay
-                        playsInline
-                        className="w-full h-full max-w-[95vw] max-h-[calc(100vh-160px)] rounded-lg object-contain"
-                        onClick={e => e.stopPropagation()}
-                        onLoadedMetadata={(e) => {
-                            const v = e.target as HTMLVideoElement;
-                            setNaturalSize({ w: v.videoWidth, h: v.videoHeight });
-                        }}
-                        style={{
-                            transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
-                            transition: dragging ? 'none' : 'transform 0.2s ease',
-                        }}
-                    />
-                ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                        src={resolvedUrl || photo.thumbnailUrl}
-                        alt={photo.filename}
-                        className="max-w-[95vw] max-h-[calc(100vh-160px)] object-contain"
-                        draggable={false}
-                        onLoad={(e) => {
-                            const img = e.target as HTMLImageElement;
-                            setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
-                        }}
-                        style={{
-                            transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
-                            transition: dragging ? 'none' : 'transform 0.2s ease',
-                        }}
-                    />
-                )}
-
-                {hasNext && zoom <= 1 && (
-                    <button
-                        onClick={(e) => { e.stopPropagation(); onNavigate(currentIndex + 1); }}
-                        className="absolute right-3 z-10 w-10 h-10 rounded-full bg-black/60 border border-white/10 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 transition"
-                    >
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="m9 18 6-6-6-6" /></svg>
-                    </button>
-                )}
-            </div>
-
-            {/* Bottom metadata bar */}
-            <div className="shrink-0 px-5 py-3 border-t border-white/5 flex flex-col gap-3" onClick={e => e.stopPropagation()}>
-                {/* Caption row */}
-                {(isOwner || caption) && (
-                    <div className="flex items-start gap-3">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#52525b" strokeWidth="2" strokeLinecap="round" className="mt-1 shrink-0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-                        {isOwner ? (
-                            <textarea
-                                ref={captionRef}
-                                value={caption}
-                                onChange={e => setCaption(e.target.value)}
-                                onBlur={handleCaptionBlur}
-                                onKeyDown={handleCaptionKeyDown}
-                                placeholder="Add a caption… (Enter to save)"
-                                rows={1}
-                                className="flex-1 bg-transparent text-xs text-zinc-300 placeholder-zinc-600 resize-none outline-none border-none focus:text-white transition-colors"
-                                style={{ overflowY: "hidden" }}
-                                onInput={e => {
-                                    const t = e.target as HTMLTextAreaElement;
-                                    t.style.height = 'auto';
-                                    t.style.height = t.scrollHeight + 'px';
-                                }}
-                            />
-                        ) : (
-                            <p className="flex-1 text-xs text-zinc-300">{caption}</p>
-                        )}
-                        {captionSaving && <span className="text-[9px] text-zinc-600 font-mono">saving…</span>}
-                    </div>
-                )}
-
-                {/* Stats row */}
-                <div className="flex items-center gap-8">
-                    <div>
-                        <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest">Size</p>
-                        <p className="text-xs text-white font-mono">{formatBytes(photo.fileSize)}</p>
-                    </div>
-                    {(resW > 0 && resH > 0) && (
-                        <div>
-                            <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest">Resolution</p>
-                            <p className="text-xs text-white font-mono">{resW} × {resH}</p>
-                        </div>
-                    )}
-
-                    {/* Set Thumbnail button (owner-only, video-only) */}
-                    {isOwner && isVideo && (
+                    <div className="flex items-center gap-2">
+                        {/* Heart/Like button */}
                         <button
-                            onClick={handleSetThumbnail}
-                            disabled={thumbnailSaving}
-                            className={`ml-auto flex items-center gap-2 px-3 py-1.5 rounded-full border transition text-xs font-bold ${thumbnailSaved
-                                ? 'border-green-500/30 bg-green-500/10 text-green-400'
-                                : 'border-white/10 hover:bg-white/5 text-zinc-400 hover:text-white'
-                                } disabled:opacity-50`}
+                            onClick={handleLike}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border border-white/10 hover:bg-white/5 transition"
+                            title="Like"
                         >
-                            {thumbnailSaving ? (
-                                <>
-                                    <span className="w-3 h-3 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
-                                    Saving…
-                                </>
-                            ) : thumbnailSaved ? (
-                                <>
-                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
-                                    Thumbnail Set
-                                </>
-                            ) : (
-                                <>
-                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                                        <circle cx="8.5" cy="8.5" r="1.5" />
-                                        <polyline points="21 15 16 10 5 21" />
-                                    </svg>
-                                    Set Thumbnail
-                                </>
+                            <svg
+                                width="14" height="14" viewBox="0 0 24 24"
+                                fill={liked ? "#ef4444" : "none"}
+                                stroke={liked ? "#ef4444" : "currentColor"}
+                                strokeWidth="2" strokeLinecap="round"
+                                style={{
+                                    transition: "transform 0.15s ease",
+                                    transform: likePulsing ? "scale(1.35)" : "scale(1)",
+                                    color: liked ? "#ef4444" : "#71717a",
+                                }}
+                            >
+                                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                            </svg>
+                            {likeCount > 0 && (
+                                <span className="text-[10px] font-bold" style={{ color: liked ? "#ef4444" : "#71717a" }}>
+                                    {likeCount}
+                                </span>
                             )}
+                        </button>
+
+                        {isOwner && (
+                            <button
+                                onClick={() => setShowMapPin(true)}
+                                className={`w-8 h-8 rounded-full border flex items-center justify-center transition ml-1 ${hasCoordinates ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20' : 'border-white/10 text-zinc-500 hover:text-white hover:bg-white/10'}`}
+                                title={hasCoordinates ? `Pinned (${photo.lat?.toFixed(4)}, ${photo.lng?.toFixed(4)})` : "Pin Location"}
+                            >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                                    <circle cx="12" cy="10" r="3" />
+                                </svg>
+                            </button>
+                        )}
+
+                        <button
+                            onClick={() => setShowComments(!showComments)}
+                            className={`w-8 h-8 rounded-full border flex items-center justify-center transition ml-1 ${showComments ? 'bg-white text-black border-white' : 'border-white/10 text-zinc-500 hover:text-white hover:bg-white/10'}`}
+                            title="Comments"
+                        >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                            </svg>
+                        </button>
+
+                        {!isVideo && (
+                            <>
+                                <button
+                                    onClick={() => setZoom(z => Math.min(z + 0.5, 7.5))}
+                                    className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/10 transition"
+                                    title="Zoom in (+)"
+                                >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                                </button>
+                                <button
+                                    onClick={() => setZoom(z => { const n = Math.max(z - 0.5, 1); if (n === 1) setPan({ x: 0, y: 0 }); return n; })}
+                                    className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/10 transition"
+                                    title="Zoom out (-)"
+                                >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                                </button>
+                            </>
+                        )}
+                        <button
+                            onClick={handleToggleFullscreen}
+                            className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/10 transition text-sm font-bold ml-1"
+                            title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+                        >
+                            {isFullscreen ? (
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" /></svg>
+                            ) : (
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" /></svg>
+                            )}
+                        </button>
+                        <button
+                            onClick={onClose}
+                            className="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/10 transition ml-2"
+                            title="Close (Esc)"
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                        </button>
+                    </div>
+                </div>
+
+                {/* Image area */}
+                <div
+                    className="flex-1 flex items-center justify-center relative min-h-0 overflow-hidden select-none"
+                    onWheel={handleWheel}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseUp}
+                    onDoubleClick={handleDoubleClick}
+                    onTouchStart={handleTouchStart}
+                    onTouchMove={handleTouchMove}
+                    onTouchEnd={handleTouchEnd}
+                    onClick={e => e.stopPropagation()}
+                    style={{ cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default' }}
+                >
+                    {hasPrev && zoom <= 1 && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onNavigate(currentIndex - 1); }}
+                            className="absolute left-3 z-10 w-10 h-10 rounded-full bg-black/60 border border-white/10 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 transition"
+                        >
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="m15 18-6-6 6-6" /></svg>
                         </button>
                     )}
 
-                    {!isVideo && (
-                        <div className="ml-auto text-[9px] text-zinc-700 font-mono">
-                            Scroll to zoom · Double-click to toggle · Drag to pan
+                    {loadingUrl ? (
+                        <div className="flex flex-col items-center gap-3">
+                            <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                            <p className="text-[10px] text-zinc-600 font-mono">Loading full resolution…</p>
                         </div>
+                    ) : isVideo ? (
+                        <video
+                            ref={videoRef}
+                            src={resolvedUrl || undefined}
+                            crossOrigin="anonymous"
+                            controls
+                            autoPlay
+                            playsInline
+                            className="w-full h-full max-w-[95vw] max-h-[calc(100vh-160px)] rounded-lg object-contain"
+                            onClick={e => e.stopPropagation()}
+                            onLoadedMetadata={(e) => {
+                                const v = e.target as HTMLVideoElement;
+                                setNaturalSize({ w: v.videoWidth, h: v.videoHeight });
+                            }}
+                        />
+                    ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                            src={resolvedUrl || photo.thumbnailUrl}
+                            alt={photo.filename}
+                            className="max-w-[95vw] max-h-[calc(100vh-160px)] object-contain"
+                            draggable={false}
+                            onLoad={(e) => {
+                                const img = e.target as HTMLImageElement;
+                                setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+                            }}
+                            style={{
+                                transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+                                transition: dragging ? 'none' : 'transform 0.2s ease',
+                            }}
+                        />
+                    )}
+
+                    {hasNext && zoom <= 1 && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onNavigate(currentIndex + 1); }}
+                            className="absolute right-3 z-10 w-10 h-10 rounded-full bg-black/60 border border-white/10 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 transition"
+                        >
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="m9 18 6-6-6-6" /></svg>
+                        </button>
                     )}
                 </div>
+
+                {/* Bottom metadata bar */}
+                <div className="shrink-0 px-5 py-3 border-t border-white/5 flex flex-col gap-3" onClick={e => e.stopPropagation()}>
+                    {/* Caption row */}
+                    {(isOwner || caption) && (
+                        <div className="flex items-start gap-3">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#52525b" strokeWidth="2" strokeLinecap="round" className="mt-1 shrink-0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                            {isOwner ? (
+                                <textarea
+                                    ref={captionRef}
+                                    value={caption}
+                                    onChange={e => setCaption(e.target.value)}
+                                    onBlur={handleCaptionBlur}
+                                    onKeyDown={handleCaptionKeyDown}
+                                    placeholder="Add a caption… (Enter to save)"
+                                    rows={1}
+                                    className="flex-1 bg-transparent text-xs text-zinc-300 placeholder-zinc-600 resize-none outline-none border-none focus:text-white transition-colors"
+                                    style={{ overflowY: "hidden" }}
+                                    onInput={e => {
+                                        const t = e.target as HTMLTextAreaElement;
+                                        t.style.height = 'auto';
+                                        t.style.height = t.scrollHeight + 'px';
+                                    }}
+                                />
+                            ) : (
+                                <p className="flex-1 text-xs text-zinc-300">{caption}</p>
+                            )}
+                            {captionSaving && <span className="text-[9px] text-zinc-600 font-mono">saving…</span>}
+                        </div>
+                    )}
+
+                    {/* Stats row */}
+                    <div className="flex items-center gap-8">
+                        <div>
+                            <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest">Size</p>
+                            <p className="text-xs text-white font-mono">{formatBytes(photo.fileSize)}</p>
+                        </div>
+                        {(resW > 0 && resH > 0) && (
+                            <div>
+                                <p className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest">Resolution</p>
+                                <p className="text-xs text-white font-mono">{resW} × {resH}</p>
+                            </div>
+                        )}
+
+                        {isOwner && isVideo && (
+                            <button
+                                onClick={handleSetThumbnail}
+                                disabled={thumbnailSaving}
+                                className={`ml-auto flex items-center gap-2 px-3 py-1.5 rounded-full border transition text-xs font-bold ${thumbnailSaved
+                                    ? 'border-green-500/30 bg-green-500/10 text-green-400'
+                                    : 'border-white/10 hover:bg-white/5 text-zinc-400 hover:text-white'
+                                    } disabled:opacity-50`}
+                            >
+                                {thumbnailSaving ? (
+                                    <>
+                                        <span className="w-3 h-3 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
+                                        Saving…
+                                    </>
+                                ) : thumbnailSaved ? (
+                                    <>
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                                        Thumbnail Set
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                                            <circle cx="8.5" cy="8.5" r="1.5" />
+                                            <polyline points="21 15 16 10 5 21" />
+                                        </svg>
+                                        Set Thumbnail
+                                    </>
+                                )}
+                            </button>
+                        )}
+
+                        {!isVideo && (
+                            <div className="ml-auto text-[9px] text-zinc-700 font-mono">
+                                Scroll to zoom · Double-click to toggle · Drag to pan
+                            </div>
+                        )}
+                    </div>
+                </div>
             </div>
-            </div>
-            
+
             {showComments && (
                 <div className="shrink-0 z-10" onClick={e => e.stopPropagation()}>
                     <CommentsPanel photoId={photo.id} />

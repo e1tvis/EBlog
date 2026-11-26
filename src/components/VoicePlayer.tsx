@@ -3,7 +3,7 @@
 import { useState, useRef } from "react";
 
 function formatTime(seconds: number) {
-    if (!seconds || isNaN(seconds)) return "0:00";
+    if (!seconds || isNaN(seconds) || !Number.isFinite(seconds)) return "0:00";
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${s.toString().padStart(2, "0")}`;
@@ -15,14 +15,19 @@ export default function VoicePlayer({ url }: { url: string }) {
     const [duration, setDuration] = useState(0);
     const [currentTime, setCurrentTime] = useState(0);
 
-    const togglePlay = () => {
+    const togglePlay = async () => {
         if (!audioRef.current) return;
         if (isPlaying) {
             audioRef.current.pause();
+            setIsPlaying(false);
         } else {
-            audioRef.current.play();
+            try {
+                await audioRef.current.play();
+                setIsPlaying(true);
+            } catch {
+                setIsPlaying(false);
+            }
         }
-        setIsPlaying(!isPlaying);
     };
 
     const handleTimeUpdate = () => {
@@ -32,7 +37,7 @@ export default function VoicePlayer({ url }: { url: string }) {
     };
 
     const handleLoadedMetadata = () => {
-        if (audioRef.current) {
+        if (audioRef.current && Number.isFinite(audioRef.current.duration)) {
             setDuration(audioRef.current.duration);
         }
     };
@@ -48,14 +53,23 @@ export default function VoicePlayer({ url }: { url: string }) {
     return (
         <div className="flex items-center gap-3 bg-white/10 px-3 py-2 rounded-full border border-white/5 min-w-[200px]">
             <audio
+                key={url}
                 ref={audioRef}
                 src={url}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
+                onDurationChange={handleLoadedMetadata}
+                onPause={() => setIsPlaying(false)}
+                onPlay={() => setIsPlaying(true)}
+                onEmptied={() => {
+                    setIsPlaying(false);
+                    setCurrentTime(0);
+                    setDuration(0);
+                }}
                 onEnded={handleEnded}
             />
-            
-            <button 
+
+            <button
                 onClick={togglePlay}
                 className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center shrink-0 hover:scale-105 transition"
             >
@@ -71,8 +85,7 @@ export default function VoicePlayer({ url }: { url: string }) {
             </button>
 
             <div className="flex-1 flex flex-col justify-center">
-                {/* Custom waveform / progress bar */}
-                <div 
+                <div
                     className="w-full h-1.5 bg-black/40 rounded-full overflow-hidden cursor-pointer relative"
                     onClick={(e) => {
                         if (!audioRef.current || duration === 0) return;
@@ -82,12 +95,12 @@ export default function VoicePlayer({ url }: { url: string }) {
                         setCurrentTime(percent * duration);
                     }}
                 >
-                    <div 
+                    <div
                         className="h-full bg-blue-500 rounded-full transition-all duration-100 ease-linear"
                         style={{ width: `${progress}%` }}
                     />
                 </div>
-                
+
                 <div className="flex justify-between mt-1 text-[9px] font-mono text-zinc-400">
                     <span>{formatTime(currentTime)}</span>
                     <span>{formatTime(duration)}</span>

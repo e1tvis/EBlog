@@ -24,42 +24,45 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { name, parentId } = await req.json();
-    if (!name?.trim()) {
-        return NextResponse.json({ error: "Missing name" }, { status: 400 });
-    }
-
-    // Generate a URL-safe slug from the name
-    const baseSlug = name.trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '');
-
-    // ✅ FIX: previous check-then-act loop (findFirst, then create) raced
-    // under concurrent requests — two admins creating the same-named album
-    // at once could both see "slug available" then both call create(),
-    // with the loser throwing an unhandled P2002 and 500ing the request.
-    // Now the create() itself is retried on P2002, bumping the suffix each
-    // time, so the race resolves safely instead of crashing.
-    let slug = baseSlug;
-    let suffix = 2;
-    let album;
-    const MAX_ATTEMPTS = 10;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-        try {
-            album = await prisma.album.create({
-                data: { name: name.trim(), slug, parentId: parentId ?? null },
-            });
-            break;
-        } catch (e: any) {
-            if (e.code === 'P2002' && attempt < MAX_ATTEMPTS - 1) {
-                slug = `${baseSlug}-${suffix++}`;
-                continue;
-            }
-            throw e;
+    try {
+        const { name, parentId } = await req.json();
+        if (!name?.trim()) {
+            return NextResponse.json({ error: "Missing name" }, { status: 400 });
         }
-    }
 
-    revalidateTag('albums', { expire: 0 });
-    return NextResponse.json(album, { status: 201 });
+        // Generate a URL-safe slug from the name; fall back if non-ASCII
+        const baseSlug = name.trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '') || `album-${Date.now()}`;
+
+        let slug = baseSlug;
+        let suffix = 2;
+        let album;
+        const MAX_ATTEMPTS = 10;
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+            try {
+                album = await prisma.album.create({
+                    data: { name: name.trim(), slug, parentId: parentId ?? null },
+                });
+                break;
+            } catch (e: unknown) {
+                if ((e as { code?: string })?.code === 'P2002' && attempt < MAX_ATTEMPTS - 1) {
+                    slug = `${baseSlug}-${suffix++}`;
+                    continue;
+                }
+                throw e;
+            }
+        }
+
+        if (!album) {
+            return NextResponse.json({ error: "Could not generate unique album slug" }, { status: 409 });
+        }
+
+        revalidateTag('albums', { expire: 0 });
+        return NextResponse.json(album, { status: 201 });
+    } catch (error) {
+        console.error("Create album error:", error);
+        return NextResponse.json({ error: "Failed to create album" }, { status: 500 });
+    }
 }

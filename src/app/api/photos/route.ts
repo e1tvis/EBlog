@@ -4,7 +4,7 @@ import { authOptions } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { revalidateTag } from "next/cache";
 import { isOwner } from "@/lib/auth-utils";
-import { getStorage } from "@/lib/storage";
+import { getStorage, Provider } from "@/lib/storage";
 import { processImageMetadata } from "@/lib/photo-processor";
 
 export async function POST(req: Request) {
@@ -28,12 +28,11 @@ export async function POST(req: Request) {
         let phash = null;
         let duplicateWarning = false;
 
+        const provider: Provider = (storageProvider as Provider) || "r2";
+
         if (mediaType === "image") {
             try {
-                // ✅ FIX: use the provider-aware storage layer instead of
-                // hardcoding R2 — this route accepts storageProvider from the
-                // client, so Oracle-backed photos were silently mishandled before.
-                const url = await getStorage(storageProvider || "r2").getDownloadUrl(r2Key);
+                const url = await getStorage(provider).getDownloadUrl(r2Key);
                 const r2Res = await fetch(url);
                 if (r2Res.ok) {
                     const buffer = Buffer.from(await r2Res.arrayBuffer());
@@ -46,19 +45,30 @@ export async function POST(req: Request) {
                     duplicateWarning = meta.isDuplicate;
                 }
             } catch (r2Err) {
-                console.error("Failed to process R2 image metadata:", r2Err);
+                console.error("Failed to process image metadata:", r2Err);
             }
         }
 
-        const photo = await prisma.photo.create({
-            data: {
+        const photo = await prisma.photo.upsert({
+            where: { r2Key },
+            update: {
+                albumId,
+                filename,
+                fileSize,
+                width,
+                height,
+                storageProvider: provider,
+                mediaType: mediaType || "image",
+                duration: duration || null,
+            },
+            create: {
                 albumId,
                 filename,
                 r2Key,
                 fileSize,
                 width,
                 height,
-                storageProvider: storageProvider || "r2",
+                storageProvider: provider,
                 mediaType: mediaType || "image",
                 duration: duration || null,
                 visibility: 'visible',
@@ -66,7 +76,7 @@ export async function POST(req: Request) {
                 lng,
                 takenAt,
                 takenAtRaw,
-                phash
+                phash,
             },
         });
 

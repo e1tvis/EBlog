@@ -31,6 +31,8 @@ export const getUploadUrl = async (key: string, contentType: string) => {
  * Calculate total bytes stored in the R2 bucket.
  */
 export const getR2BucketSize = async (): Promise<number> => {
+    if (!process.env.R2_BUCKET_NAME || !process.env.R2_ENDPOINT) return 0;
+
     let totalBytes = 0;
     let continuationToken: string | undefined;
 

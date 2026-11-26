@@ -4,7 +4,7 @@ import { S3Client, ListObjectsV2Command } from "@aws-sdk/client-s3";
 
 export type StorageObject = { Key: string; Size: number; provider: "r2" | "oracle" };
 
-const EXCLUDED_PREFIXES = ["thumbs/"];
+const EXCLUDED_PREFIXES = ["thumbs/", "messages/"];
 
 /**
  * Fetches all valid objects from a given S3-compatible client.
@@ -60,8 +60,8 @@ export async function getAllStorageObjects(): Promise<StorageObject[]> {
         console.error("Oracle sync failed:", oracleResult.reason);
     }
 
-    console.log(`Found ${r2Objects.length} objects in R2 (excluded thumbs).`);
-    console.log(`Found ${oracleObjects.length} objects in Oracle (excluded thumbs).`);
+    console.log(`Found ${r2Objects.length} objects in R2 (excluded thumbs/messages).`);
+    console.log(`Found ${oracleObjects.length} objects in Oracle (excluded thumbs/messages).`);
 
     return [...r2Objects, ...oracleObjects];
 }

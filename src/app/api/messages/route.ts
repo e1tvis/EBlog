@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { createNotification } from "@/lib/notify";
-import { isOwner } from "@/lib/auth-utils";
+import { createNotification, createBulkNotifications } from "@/lib/notify";
+import { isOwner, getOwnerEmailCandidates } from "@/lib/auth-utils";
 
 export async function GET(req: Request) {
     const session = await getServerSession(authOptions);
@@ -17,13 +17,21 @@ export async function GET(req: Request) {
 
         if (!chatId) return NextResponse.json({ error: "Missing chatId" }, { status: 400 });
 
-        const user = await prisma.user.update({
-            where: { email: session.user.email },
-            data: { lastSeen: new Date() },
-            select: { id: true, role: true }
+        const now = new Date();
+        const userEmail = session.user.email.toLowerCase();
+        await prisma.user.updateMany({
+            where: { email: userEmail },
+            data: { lastSeen: now },
         });
 
-        if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+        const user = await prisma.user.findUnique({
+            where: { email: userEmail },
+            select: { id: true, role: true },
+        });
+
+        if (!user && !isOwner(session)) {
+            return NextResponse.json({ error: "User not found" }, { status: 404 });
+        }
 
         const chat = await prisma.chat.findUnique({
             where: { id: chatId }
@@ -31,26 +39,27 @@ export async function GET(req: Request) {
 
         if (!chat) return NextResponse.json({ error: "Chat not found" }, { status: 404 });
 
-        // Ensure user is part of chat or is admin
-        const isAdmin = isOwner(session) || user.role === 'admin';
-        if (chat.userId !== user.id && !isAdmin) {
+        const isAdmin = isOwner(session) || user?.role === 'admin';
+        if (chat.userId !== user?.id && !isAdmin) {
             return NextResponse.json({ error: "Forbidden" }, { status: 403 });
         }
 
-        // Fetch messages
         const messages = await prisma.message.findMany({
-            where: { chatId },
+            where: {
+                chatId,
+                OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+            },
             orderBy: { createdAt: 'asc' },
-            // Could add pagination here
         });
 
-        // Mark as read
-        const unreadIds = messages.filter(m => !m.readAt && m.senderId !== user.id).map(m => m.id);
-        if (unreadIds.length > 0) {
-            await prisma.message.updateMany({
-                where: { id: { in: unreadIds } },
-                data: { readAt: new Date() }
-            });
+        if (user) {
+            const unreadIds = messages.filter(m => !m.readAt && m.senderId !== user.id).map(m => m.id);
+            if (unreadIds.length > 0) {
+                await prisma.message.updateMany({
+                    where: { id: { in: unreadIds } },
+                    data: { readAt: now }
+                });
+            }
         }
 
         return NextResponse.json(messages);
@@ -71,8 +80,9 @@ export async function POST(req: Request) {
 
         if (!chatId || !type) return NextResponse.json({ error: "Missing fields" }, { status: 400 });
 
+        const userEmail = session.user.email.toLowerCase();
         const user = await prisma.user.findUnique({
-            where: { email: session.user.email },
+            where: { email: userEmail },
             select: { id: true, name: true, role: true }
         });
 
@@ -101,28 +111,35 @@ export async function POST(req: Request) {
             }
         });
 
-        // Notify recipient
-        const recipientId = isAdmin ? chat.userId : 'admin';
-        if (recipientId !== 'admin') {
+        if (isAdmin && chat.userId !== user.id) {
             await createNotification({
-                userId: recipientId,
+                userId: chat.userId,
                 actorId: user.id,
                 actorName: user.name || 'Admin',
                 type: 'message',
                 chatId
             });
         } else {
-             // Notify all admins
-             const admins = await prisma.user.findMany({ where: { role: 'admin' } });
-             for(const admin of admins) {
-                 await createNotification({
-                     userId: admin.id,
-                     actorId: user.id,
-                     actorName: user.name || 'User',
-                     type: 'message',
-                     chatId
-                 });
-             }
+            const ownerEmails = getOwnerEmailCandidates();
+            const admins = await prisma.user.findMany({
+                where: {
+                    OR: [
+                        { role: 'admin' },
+                        ...(ownerEmails.length > 0 ? [{ email: { in: ownerEmails } }] : []),
+                    ],
+                },
+                select: { id: true },
+            });
+
+            await createBulkNotifications(
+                admins.map(a => a.id),
+                {
+                    actorId: user.id,
+                    actorName: user.name || 'User',
+                    type: 'message',
+                    chatId,
+                }
+            );
         }
 
         return NextResponse.json(message);

@@ -3,6 +3,7 @@ import { NextAuthOptions } from 'next-auth';
 import GitHubProvider from 'next-auth/providers/github';
 import GoogleProvider from 'next-auth/providers/google';
 import { prisma } from '@/lib/prisma';
+import { isOwner, normalizeGoogleIdentifier } from '@/lib/auth-utils';
 
 export const authOptions: NextAuthOptions = {
     providers: [
@@ -17,9 +18,13 @@ export const authOptions: NextAuthOptions = {
         }),
     ],
     callbacks: {
-        // signIn: no DB calls here — just allow everyone through.
-        // DB record creation happens lazily in the jwt callback instead.
-        async signIn() {
+        async signIn({ account, profile }) {
+            if (account?.provider === 'google') {
+                const p = profile as any;
+                if (!p?.email || p.email_verified === false) {
+                    return false;
+                }
+            }
             return true;
         },
         async jwt({ token, user, profile, account }) {
@@ -29,39 +34,58 @@ export const authOptions: NextAuthOptions = {
                 const p = profile as any;
 
                 if (provider === 'github') {
-                    // GitHub: always has `login` (username)
-                    token.username = p.login;
+                    const login = String(p.login || '').toLowerCase().trim();
+                    token.username = login;
                     token.name = p.name || p.login;
-                    token.email = `${p.login}-git`;
+                    token.email = `${login}-git`;
                 } else if (provider === 'google') {
-                    // Google: always has email
-                    const email = p.email || user?.email || '';
-                    token.username = email.split('@')[0];
+                    const rawEmail = String(p.email || user?.email || '').toLowerCase().trim();
+                    const identifier = normalizeGoogleIdentifier(rawEmail);
+                    token.username = rawEmail.split('@')[0];
                     token.name = p.name || token.username;
-                    token.email = token.username as string;
+                    token.email = identifier;
                 }
 
                 token.provider = provider;
 
-                // Fire-and-forget DB upsert — never blocks, never crashes sign-in
-                const identifier = token.email as string;
+                const identifier = (token.email as string)?.toLowerCase();
                 const displayName = (token.name as string) || identifier;
                 if (identifier) {
-                    prisma.user.upsert({
-                        where: { email: identifier.toLowerCase() },
-                        update: { name: displayName },
-                        create: {
-                            email: identifier.toLowerCase(),
-                            name: displayName,
-                            role: 'viewer',
+                    const ownerSession = {
+                        user: {
+                            email: identifier,
+                            username: token.username as string,
+                            provider,
                         },
-                    }).catch(err => console.error('User upsert failed (non-fatal):', err));
+                        expires: '',
+                    } as any;
+                    const ownerFlag = isOwner(ownerSession);
+
+                    try {
+                        await prisma.user.upsert({
+                            where: { email: identifier },
+                            update: {
+                                name: displayName,
+                                ...(ownerFlag ? { role: 'admin' } : {}),
+                            },
+                            create: {
+                                email: identifier,
+                                name: displayName,
+                                role: ownerFlag ? 'admin' : 'viewer',
+                            },
+                        });
+                    } catch (err) {
+                        console.error('User upsert failed (non-fatal):', err);
+                    }
                 }
             }
 
-            // Normalize legacy -google suffix from old tokens
-            if (typeof token.email === 'string' && token.email.endsWith('-google')) {
-                token.email = token.email.replace(/-google$/, '');
+            // Always keep email and username lowercase and strip legacy -google suffix
+            if (typeof token.email === 'string') {
+                token.email = token.email.toLowerCase().replace(/-google$/, '');
+            }
+            if (typeof token.username === 'string') {
+                token.username = token.username.toLowerCase();
             }
 
             return token;

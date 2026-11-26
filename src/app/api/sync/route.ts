@@ -10,6 +10,52 @@ import { getAllStorageObjects } from "@/lib/sync-utils";
 
 /** File extensions recognized as video media */
 const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "avi", "mkv", "ogg", "m4v", "wmv"]);
+/** File extensions recognized as image media */
+const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "avif", "heic", "heif", "tiff", "tif", "bmp", "svg"]);
+
+async function findOrCreateAlbum(
+    name: string,
+    slug: string,
+    parentId: string | null
+): Promise<Album> {
+    if (parentId !== null) {
+        return prisma.album.upsert({
+            where: { parentId_slug: { parentId, slug } },
+            update: {},
+            create: {
+                name,
+                slug,
+                parentId,
+                visibility: "private",
+            },
+        });
+    }
+
+    // For root albums (parentId === null), Prisma's compound unique input does not accept null
+    const existing = await prisma.album.findFirst({
+        where: { parentId: null, slug },
+    });
+    if (existing) return existing;
+
+    try {
+        return await prisma.album.create({
+            data: {
+                name,
+                slug,
+                parentId: null,
+                visibility: "private",
+            },
+        });
+    } catch (err: unknown) {
+        if ((err as { code?: string })?.code === "P2002") {
+            const retry = await prisma.album.findFirst({
+                where: { parentId: null, slug },
+            });
+            if (retry) return retry;
+        }
+        throw err;
+    }
+}
 
 export async function POST() {
     const session = await getServerSession(authOptions);
@@ -34,7 +80,7 @@ export async function POST() {
         const allKeys = allObjects.map(o => o.Key);
         const existingPhotos = [];
         const FIND_BATCH_SIZE = 500;
-        
+
         for (let i = 0; i < allKeys.length; i += FIND_BATCH_SIZE) {
             const batchKeys = allKeys.slice(i, i + FIND_BATCH_SIZE);
             const batchPhotos = await prisma.photo.findMany({
@@ -62,15 +108,7 @@ export async function POST() {
             const lookupKey = `null|${slug}`;
             let album = albumLookup.get(lookupKey);
             if (!album) {
-                // ✅ FIX: upsert instead of create — concurrent sync requests
-                // racing on the same missing "uncategorized" album previously
-                // threw a P2002 unique constraint error on the loser, aborting
-                // the entire sync job mid-batch.
-                album = await prisma.album.upsert({
-                    where: { parentId_slug: { parentId: null, slug } } as any,
-                    update: {},
-                    create: { name: "Uncategorized", slug, parentId: null, visibility: "private" },
-                }) as Album;
+                album = await findOrCreateAlbum("Uncategorized", slug, null);
                 albumLookup.set(lookupKey, album);
             }
             uncategorizedAlbumId = album.id;
@@ -103,25 +141,12 @@ export async function POST() {
             // Resolve or create album hierarchy
             let lastAlbumId: string | null = null;
             for (const albumName of albumPath) {
-                const slug = albumName.toLowerCase().replace(/\s+/g, '-');
+                const slug = albumName.toLowerCase().replace(/\s+/g, '-') || "album";
                 const lookupKey = `${lastAlbumId || "null"}|${slug}`;
 
                 let album = albumLookup.get(lookupKey);
                 if (!album) {
-                    // ✅ FIX: upsert instead of create — same race condition as
-                    // getUncategorizedAlbum() above. Two concurrent sync requests
-                    // walking the same new album path would otherwise have one
-                    // create() succeed and the other throw P2002, killing the job.
-                    album = await prisma.album.upsert({
-                        where: { parentId_slug: { parentId: lastAlbumId ?? null, slug } } as any,
-                        update: {},
-                        create: {
-                            name: albumName,
-                            slug,
-                            parentId: lastAlbumId ?? null,
-                            visibility: "private",
-                        },
-                    }) as Album;
+                    album = await findOrCreateAlbum(albumName, slug, lastAlbumId);
                     albumLookup.set(lookupKey, album);
                     albumsCreated++;
                 }
@@ -134,7 +159,9 @@ export async function POST() {
                 photosToUpdate.push({ id: existing.id, fileSize: obj.Size });
             } else {
                 const ext = filename.split('.').pop()?.toLowerCase() || '';
-                const mediaType = VIDEO_EXTENSIONS.has(ext) ? 'video' : 'image';
+                const mediaType = VIDEO_EXTENSIONS.has(ext)
+                    ? 'video'
+                    : (IMAGE_EXTENSIONS.has(ext) ? 'image' : 'file');
                 photosToCreate.push({
                     albumId: lastAlbumId || await getUncategorizedAlbum(),
                     filename,
@@ -185,4 +212,3 @@ export async function POST() {
         return NextResponse.json({ error: msg }, { status: 500 });
     }
 }
-

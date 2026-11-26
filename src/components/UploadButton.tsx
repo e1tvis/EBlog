@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import heic2any from "heic2any";
+import { toast } from "sonner";
 
 type Provider = "r2" | "oracle";
 
@@ -21,18 +22,19 @@ export default function UploadButton({ albumId }: { albumId: string }) {
             for (let i = 0; i < files.length; i++) {
                 let file = files[i];
                 const isVideo = file.type.startsWith('video/');
+                const isImage = file.type.startsWith('image/') || /\.heic$/i.test(file.name);
+                const mediaType = isVideo ? "video" : (isImage ? "image" : "file");
                 setProgress(`Uploading ${i + 1}/${files.length}…`);
 
-                // HEIC can't be decoded on Vercel (no HEVC plugin) — convert client-side (images only)
                 if (!isVideo && /\.heic$/i.test(file.name)) {
                     setProgress(`Converting ${file.name}…`);
-                    const jpegBlob = await heic2any({ blob: file, toType: "image/jpeg", quality: 1.0 }) as Blob;
+                    const rawBlob = await heic2any({ blob: file, toType: "image/jpeg", quality: 1.0 });
+                    const jpegBlob = Array.isArray(rawBlob) ? rawBlob[0] : rawBlob;
                     const jpegName = file.name.replace(/\.heic$/i, ".jpg");
                     file = new File([jpegBlob], jpegName, { type: "image/jpeg" });
                 }
 
                 if (provider === "r2") {
-                    // Presigned URL flow: browser uploads directly to R2
                     const signRes = await fetch("/api/photos/sign", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
@@ -67,7 +69,7 @@ export default function UploadButton({ albumId }: { albumId: string }) {
                             r2Key: key,
                             fileSize: file.size,
                             storageProvider: "r2",
-                            mediaType: isVideo ? "video" : "image",
+                            mediaType,
                         }),
                     });
                     if (!metaRes.ok) {
@@ -75,8 +77,7 @@ export default function UploadButton({ albumId }: { albumId: string }) {
                         throw new Error(data.error || "Failed to save photo metadata");
                     }
                 } else {
-                    // Oracle: proxied upload (no CORS support for direct uploads)
-                    const ORACLE_MAX_SIZE = 4 * 1024 * 1024; // 4MB Vercel limit
+                    const ORACLE_MAX_SIZE = 4 * 1024 * 1024;
                     if (file.size > ORACLE_MAX_SIZE) {
                         throw new Error(
                             `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)}MB — Oracle uploads are limited to 4MB on Vercel. Switch to R2 Storage for larger files.`
@@ -99,9 +100,10 @@ export default function UploadButton({ albumId }: { albumId: string }) {
                 }
             }
             router.refresh();
+            toast.success("Upload complete!");
         } catch (error: unknown) {
             console.error("Upload failed:", error);
-            alert(`Upload failed: ${(error as Error).message}`);
+            toast.error(`Upload failed: ${(error as Error).message}`);
         } finally {
             setUploading(false);
             setProgress("");

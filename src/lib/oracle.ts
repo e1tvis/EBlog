@@ -59,25 +59,27 @@ export const getOracleDownloadUrl = async (key: string) => {
 export const getOraclePublicUrl = (key: string): string => {
     const endpoint = (process.env.ORACLE_ENDPOINT || '').replace(/\/$/, '');
     const bucket = process.env.ORACLE_BUCKET_NAME || '';
-    
-    // Attempt to convert the S3-compatible endpoint to native OCI format 
+    const encodedKey = key.split('/').map(k => encodeURIComponent(k)).join('/');
+
+    // Attempt to convert the S3-compatible endpoint to native OCI format
     // Native OCI supports unauthenticated public bucket endpoints reliably.
-    const match = endpoint.match(/^https:\/\/([^\.]+)\.compat\.objectstorage\.([^\.]+)\.oraclecloud\.com/);
+    const match = endpoint.match(/^https:\/\/([^.]+)\.compat\.objectstorage\.([^.]+)\.oraclecloud\.com/);
     if (match) {
         const namespace = match[1];
         const region = match[2];
-        const encodedKey = key.split('/').map(k => encodeURIComponent(k)).join('/');
         return `https://objectstorage.${region}.oraclecloud.com/n/${namespace}/b/${bucket}/o/${encodedKey}`;
     }
-    
+
     // Fallback if regex fails
-    return `${endpoint}/${bucket}/${encodeURIComponent(key)}`;
+    return `${endpoint}/${bucket}/${encodedKey}`;
 };
 
 /**
  * Calculate total bytes stored in the Oracle bucket.
  */
 export const getOracleBucketSize = async (): Promise<number> => {
+    if (!process.env.ORACLE_BUCKET_NAME || !process.env.ORACLE_ENDPOINT) return 0;
+
     let totalBytes = 0;
     let continuationToken: string | undefined;
 

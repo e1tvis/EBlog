@@ -15,6 +15,7 @@ interface CommentType {
     body: string;
     createdAt: string;
     deletedAt: string | null;
+    canDelete?: boolean;
     user: User;
     replies: CommentType[];
 }
@@ -41,6 +42,8 @@ export default function CommentsPanel({ photoId }: { photoId: string }) {
     };
 
     useEffect(() => {
+        setReplyTo(null);
+        setLoading(true);
         fetchComments();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [photoId]);
@@ -75,16 +78,19 @@ export default function CommentsPanel({ photoId }: { photoId: string }) {
         if (!confirm("Delete this comment?")) return;
         try {
             const res = await fetch(`/api/comments/${id}`, { method: "DELETE" });
-            if (res.ok) fetchComments();
+            if (res.ok) {
+                fetchComments();
+            } else {
+                toast.error("Not authorized to delete this comment");
+            }
         } catch {
-             toast.error("Failed to delete comment");
+            toast.error("Failed to delete comment");
         }
     };
 
-    // Very basic username highlighting
     const renderBody = (text: string) => {
         const parts = text.split(/(@[\w.-]+)/g);
-        return parts.map((part, i) => 
+        return parts.map((part, i) =>
             part.startsWith('@') ? <span key={i} className="text-blue-400 font-medium">{part}</span> : part
         );
     };
@@ -111,12 +117,14 @@ export default function CommentsPanel({ photoId }: { photoId: string }) {
                                 Reply
                             </button>
                         )}
-                        <button onClick={() => deleteComment(c.id)} className="text-[10px] text-red-500/50 hover:text-red-400 uppercase font-bold tracking-wider">
-                            Delete
-                        </button>
+                        {c.canDelete && (
+                            <button onClick={() => deleteComment(c.id)} className="text-[10px] text-red-500/50 hover:text-red-400 uppercase font-bold tracking-wider">
+                                Delete
+                            </button>
+                        )}
                     </div>
                 )}
-                
+
                 {c.replies?.map(r => <CommentRender key={r.id} c={r} isReply={true} />)}
             </div>
         );
@@ -145,7 +153,7 @@ export default function CommentsPanel({ photoId }: { photoId: string }) {
                 ) : comments.length === 0 ? (
                     <div className="text-center text-zinc-500 py-10">
                         <svg className="w-12 h-12 mx-auto mb-3 opacity-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-                        <p className="text-sm">No comments yet.<br/>Be the first to share your thoughts!</p>
+                        <p className="text-sm">No comments yet.<br />Be the first to share your thoughts!</p>
                     </div>
                 ) : (
                     comments.map(c => <CommentRender key={c.id} c={c} />)
@@ -175,7 +183,7 @@ export default function CommentsPanel({ photoId }: { photoId: string }) {
                             rows={3}
                         />
                         <div className="flex justify-end">
-                            <button 
+                            <button
                                 onClick={submitComment}
                                 disabled={!newComment.trim()}
                                 className="bg-white text-black px-4 py-1.5 rounded-full text-xs font-bold disabled:opacity-50 hover:bg-zinc-200 transition"

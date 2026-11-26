@@ -1,10 +1,9 @@
-/* eslint-disable */
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/auth";
 import { prisma } from "@/lib/prisma";
 
-export async function GET(req: Request) {
+export async function GET() {
     const session = await getServerSession(authOptions);
     if (!session?.user?.email) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -12,12 +11,12 @@ export async function GET(req: Request) {
 
     try {
         const user = await prisma.user.findUnique({
-            where: { email: session.user.email },
+            where: { email: session.user.email.toLowerCase() },
             select: { id: true }
         });
 
         if (!user) {
-            return NextResponse.json({ error: "User not found" }, { status: 404 });
+            return NextResponse.json([]);
         }
 
         const notifications = await prisma.notification.findMany({
@@ -26,7 +25,45 @@ export async function GET(req: Request) {
             take: 20
         });
 
-        return NextResponse.json(notifications);
+        // Resolve album slug paths for photo-linked notifications so clicking navigates cleanly
+        const photoIds = [...new Set(notifications.map(n => n.photoId).filter((id): id is string => Boolean(id)))];
+        const photoPathMap = new Map<string, string>();
+
+        if (photoIds.length > 0) {
+            const [photos, allAlbums] = await Promise.all([
+                prisma.photo.findMany({
+                    where: { id: { in: photoIds } },
+                    select: { id: true, albumId: true },
+                }),
+                prisma.album.findMany({
+                    select: { id: true, slug: true, parentId: true },
+                }),
+            ]);
+
+            const albumMap = new Map(allAlbums.map(a => [a.id, a]));
+            for (const p of photos) {
+                const parts: string[] = [];
+                let cur = albumMap.get(p.albumId);
+                let depth = 0;
+                while (cur && depth < 20) {
+                    parts.unshift(cur.slug);
+                    cur = cur.parentId ? albumMap.get(cur.parentId) : undefined;
+                    depth++;
+                }
+                if (parts.length === 1 && parts[0] === 'vault') {
+                    photoPathMap.set(p.id, '/vault');
+                } else if (parts.length > 0) {
+                    photoPathMap.set(p.id, `/gallery/${parts.join('/')}`);
+                }
+            }
+        }
+
+        const enriched = notifications.map(n => ({
+            ...n,
+            targetUrl: n.photoId ? (photoPathMap.get(n.photoId) ?? '/gallery') : null,
+        }));
+
+        return NextResponse.json(enriched);
     } catch (error) {
         console.error("Fetch notifications error:", error);
         return NextResponse.json({ error: "Failed to fetch notifications" }, { status: 500 });
@@ -43,7 +80,7 @@ export async function PATCH(req: Request) {
         const { id, markAll } = await req.json();
 
         const user = await prisma.user.findUnique({
-            where: { email: session.user.email },
+            where: { email: session.user.email.toLowerCase() },
             select: { id: true }
         });
 
@@ -55,7 +92,7 @@ export async function PATCH(req: Request) {
                 data: { read: true }
             });
         } else if (id) {
-            await prisma.notification.update({
+            await prisma.notification.updateMany({
                 where: { id, userId: user.id },
                 data: { read: true }
             });

@@ -1,48 +1,53 @@
 import { z } from "zod";
 
+const emptyToUndefined = <T extends z.ZodTypeAny>(schema: T) =>
+    z.preprocess((val) => (typeof val === "string" && val.trim() === "" ? undefined : val), schema);
+
 /**
- * Validates ALL required environment variables at module load time.
- * Fails LOUDLY with a readable message instead of letting a missing
- * var surface later as a cryptic AWS SDK / Prisma connection error.
- *
- * Import this once in a top-level file (e.g. instrumentation.ts or
- * the root layout) to force validation on cold start.
+ * Validates environment variables at module load time.
+ * Logs readable warnings on cold start if required secrets are missing or malformed.
  */
 const envSchema = z.object({
-    DATABASE_URL: z.string().url(),
-    DIRECT_URL: z.string().url(),
-    NEXTAUTH_SECRET: z.string().min(16, "NEXTAUTH_SECRET must be at least 16 chars"),
+    DATABASE_URL: emptyToUndefined(z.string().url()),
+    DIRECT_URL: emptyToUndefined(z.string().url().optional()),
+    NEXTAUTH_SECRET: emptyToUndefined(z.string().min(16, "NEXTAUTH_SECRET must be at least 16 chars")),
 
-    GITHUB_ID: z.string().min(1),
-    GITHUB_SECRET: z.string().min(1),
-    GOOGLE_CLIENT_ID: z.string().min(1),
-    GOOGLE_CLIENT_SECRET: z.string().min(1),
+    GITHUB_ID: emptyToUndefined(z.string().min(1).optional()),
+    GITHUB_SECRET: emptyToUndefined(z.string().min(1).optional()),
+    GOOGLE_CLIENT_ID: emptyToUndefined(z.string().min(1).optional()),
+    GOOGLE_CLIENT_SECRET: emptyToUndefined(z.string().min(1).optional()),
 
-    OWNER_EMAIL: z.string().optional(),
-    OWNER_USERNAME: z.string().optional(),
+    OWNER_EMAIL: emptyToUndefined(z.string().optional()),
+    OWNER_USERNAME: emptyToUndefined(z.string().optional()),
 
-    R2_ENDPOINT: z.string().url(),
-    R2_ACCESS_KEY_ID: z.string().min(1),
-    R2_SECRET_ACCESS_KEY: z.string().min(1),
-    R2_BUCKET_NAME: z.string().min(1),
+    R2_ENDPOINT: emptyToUndefined(z.string().url().optional()),
+    R2_ACCESS_KEY_ID: emptyToUndefined(z.string().min(1).optional()),
+    R2_SECRET_ACCESS_KEY: emptyToUndefined(z.string().min(1).optional()),
+    R2_BUCKET_NAME: emptyToUndefined(z.string().min(1).optional()),
+    R2_PUBLIC_URL: emptyToUndefined(z.string().url().optional()),
 
-    ORACLE_ENDPOINT: z.string().url().optional(),
-    ORACLE_ACCESS_KEY_ID: z.string().optional(),
-    ORACLE_SECRET_ACCESS_KEY: z.string().optional(),
-    ORACLE_BUCKET_NAME: z.string().optional(),
-    ORACLE_REGION: z.string().optional(),
+    ORACLE_ENDPOINT: emptyToUndefined(z.string().url().optional()),
+    ORACLE_ACCESS_KEY_ID: emptyToUndefined(z.string().optional()),
+    ORACLE_SECRET_ACCESS_KEY: emptyToUndefined(z.string().optional()),
+    ORACLE_BUCKET_NAME: emptyToUndefined(z.string().optional()),
+    ORACLE_REGION: emptyToUndefined(z.string().optional()),
+    ORACLE_PUBLIC_URL: emptyToUndefined(z.string().url().optional()),
+
+    STORAGE_PROVIDER: emptyToUndefined(z.enum(["r2", "oracle", "s3", "backblaze"]).optional()),
+    CRON_SECRET: emptyToUndefined(z.string().optional()),
 }).refine(
-    (data) => !!data.OWNER_EMAIL || !!data.OWNER_USERNAME,
-    { message: "At least one of OWNER_EMAIL or OWNER_USERNAME must be set" }
+    (data) => Boolean(data.OWNER_EMAIL || data.OWNER_USERNAME),
+    { message: "At least one of OWNER_EMAIL or OWNER_USERNAME should be configured", path: ["OWNER_EMAIL"] }
 );
 
 export type Env = z.infer<typeof envSchema>;
 
-function validateEnv(): Env {
+function validateEnv(): Partial<Env> {
     const parsed = envSchema.safeParse(process.env);
     if (!parsed.success) {
         const issues = parsed.error.issues.map(i => `  - ${i.path.join(".")}: ${i.message}`).join("\n");
-        throw new Error(`❌ Invalid environment configuration:\n${issues}`);
+        console.warn(`⚠️ Environment configuration warning:\n${issues}`);
+        return (process.env as unknown) as Partial<Env>;
     }
     return parsed.data;
 }

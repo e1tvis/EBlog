@@ -12,14 +12,19 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { albumId, coverPhotoId } = await req.json();
-    if (!albumId) return NextResponse.json({ error: "albumId required" }, { status: 400 });
+    try {
+        const { albumId, coverPhotoId } = await req.json();
+        if (!albumId) return NextResponse.json({ error: "albumId required" }, { status: 400 });
 
-    const album = await prisma.album.update({
-        where: { id: albumId },
-        data: { coverPhotoId: coverPhotoId || null },
-    });
+        const album = await prisma.album.update({
+            where: { id: albumId },
+            data: { coverPhotoId: coverPhotoId || null },
+        });
 
-    revalidateTag('albums', { expire: 0 });
-    return NextResponse.json(album);
+        revalidateTag('albums', { expire: 0 });
+        return NextResponse.json(album);
+    } catch (error) {
+        console.error("Set album cover error:", error);
+        return NextResponse.json({ error: "Failed to set album cover" }, { status: 500 });
+    }
 }

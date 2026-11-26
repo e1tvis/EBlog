@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getStorage } from "@/lib/storage";
 
-export const maxDuration = 10;
+export const maxDuration = 60;
 
 export async function GET(req: Request) {
-    // Check authorization
     const authHeader = req.headers.get("Authorization");
     const secret = process.env.CRON_SECRET;
 
@@ -30,21 +30,39 @@ export async function GET(req: Request) {
         });
         archivedCount = expiredPosts.count;
 
-        // 2. Hard delete posts archived > 14 days ago
-        const oldPosts = await prisma.post.deleteMany({
-            where: {
-                archivedAt: { lte: fourteenDaysAgo }
-            }
-        });
-        deletedPostsCount = oldPosts.count;
+        const storage = getStorage("r2");
 
-        // 3. Hard delete expired messages
-        const oldMessages = await prisma.message.deleteMany({
-            where: {
-                expiresAt: { lte: now }
-            }
+        // 2. Hard delete posts archived > 14 days ago (and clean up their media files)
+        const postsToDelete = await prisma.post.findMany({
+            where: { archivedAt: { lte: fourteenDaysAgo } },
+            select: { id: true, mediaKeys: true },
         });
-        deletedMessagesCount = oldMessages.count;
+        if (postsToDelete.length > 0) {
+            const postMediaKeys = postsToDelete.flatMap(p => p.mediaKeys || []).filter(Boolean);
+            if (postMediaKeys.length > 0) {
+                await Promise.allSettled(postMediaKeys.map(key => storage.deleteObject(key)));
+            }
+            const oldPosts = await prisma.post.deleteMany({
+                where: { id: { in: postsToDelete.map(p => p.id) } }
+            });
+            deletedPostsCount = oldPosts.count;
+        }
+
+        // 3. Hard delete expired messages (and clean up their media files)
+        const messagesToDelete = await prisma.message.findMany({
+            where: { expiresAt: { lte: now } },
+            select: { id: true, mediaKey: true },
+        });
+        if (messagesToDelete.length > 0) {
+            const msgMediaKeys = messagesToDelete.map(m => m.mediaKey).filter((k): k is string => Boolean(k));
+            if (msgMediaKeys.length > 0) {
+                await Promise.allSettled(msgMediaKeys.map(key => storage.deleteObject(key)));
+            }
+            const oldMessages = await prisma.message.deleteMany({
+                where: { id: { in: messagesToDelete.map(m => m.id) } }
+            });
+            deletedMessagesCount = oldMessages.count;
+        }
 
         console.log(`[cron/cleanup] Run complete: Archived ${archivedCount} posts, Deleted ${deletedPostsCount} posts, Deleted ${deletedMessagesCount} messages.`);
 

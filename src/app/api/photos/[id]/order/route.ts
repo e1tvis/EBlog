@@ -5,18 +5,27 @@ import { prisma } from "@/lib/prisma";
 import { revalidateTag } from "next/cache";
 import { isOwner } from "@/lib/auth-utils";
 
-// PATCH /api/photos/[id]/order  — update sortOrder
+// PATCH /api/photos/[id]/order — update sortOrder
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
     const session = await getServerSession(authOptions);
     if (!isOwner(session)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const { id } = await params;
-    const { sortOrder } = await req.json();
+    try {
+        const { id } = await params;
+        const { sortOrder } = await req.json();
 
-    const photo = await prisma.photo.update({
-        where: { id },
-        data: { sortOrder },
-    });
-    revalidateTag('photos', { expire: 0 });
-    return NextResponse.json(photo);
+        if (sortOrder !== null && (typeof sortOrder !== "number" || !Number.isInteger(sortOrder))) {
+            return NextResponse.json({ error: "Invalid sortOrder" }, { status: 400 });
+        }
+
+        const photo = await prisma.photo.update({
+            where: { id },
+            data: { sortOrder },
+        });
+        revalidateTag('photos', { expire: 0 });
+        return NextResponse.json(photo);
+    } catch (error) {
+        console.error("Update photo order error:", error);
+        return NextResponse.json({ error: "Failed to update photo order" }, { status: 500 });
+    }
 }

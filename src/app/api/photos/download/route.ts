@@ -1,14 +1,21 @@
-/* eslint-disable */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/auth";
-import { getDownloadUrl as getR2DownloadUrl } from "@/lib/r2";
-import { getOracleDownloadUrl } from "@/lib/oracle";
+import { getStorage, Provider } from "@/lib/storage";
 import { prisma } from "@/lib/prisma";
 import { isOwner } from "@/lib/auth-utils";
 
-function getAllowedHost(provider: string): string | null {
-    const endpoint = provider === "oracle" ? process.env.ORACLE_ENDPOINT : process.env.R2_ENDPOINT;
+function getAllowedHost(provider: Provider): string | null {
+    if (provider === "s3") {
+        return "amazonaws.com";
+    }
+    const endpoint =
+        provider === "oracle"
+            ? process.env.ORACLE_ENDPOINT
+            : provider === "backblaze"
+                ? process.env.B2_ENDPOINT
+                : process.env.R2_ENDPOINT;
     if (!endpoint) return null;
     try {
         return new URL(endpoint).hostname;
@@ -20,44 +27,38 @@ function getAllowedHost(provider: string): string | null {
 
 function isAllowedRedirectHost(targetHost: string, expectedHost: string): boolean {
     if (targetHost === expectedHost) return true;
-    const targetParts = targetHost.split(".");
-    const expectedParts = expectedHost.split(".");
-    if (targetParts.length !== expectedParts.length + 1) return false;
-    return targetParts.slice(1).join(".") === expectedHost;
+    return targetHost.endsWith(`.${expectedHost}`);
 }
 
-/**
- * ✅ FIX (IDOR): previously this route only checked `if (!session) return 401`
- * — ANY authenticated user could pass an arbitrary `key` and receive a signed
- * download URL / direct redirect to ANY object in storage, including private
- * vault photos (bypassing visibility/role checks AND the PAYG blur paywall)
- * and other users' private DM images/voice messages. r2Key/mediaKey values
- * are deterministic and guessable, so this was exploitable by any logged-in
- * user, not just the owner.
- *
- * This resolves `key` against the DB and enforces the SAME authorization
- * rules used by the gallery (Photo) or the messenger (Message.mediaKey)
- * before ever issuing a URL. Unknown keys are rejected outright.
- */
-async function authorizeKeyAccess(key: string, session: any): Promise<boolean> {
-    if (isOwner(session)) return true;
+async function authorizeKeyAccess(
+    key: string,
+    session: any
+): Promise<{ authorized: boolean; provider?: Provider }> {
+    const owner = isOwner(session);
+    const userEmail = (session?.user?.email as string | undefined)?.toLowerCase();
+    const now = new Date();
 
-    const userEmail = session?.user?.email as string | undefined;
-
-    // Case 1: key belongs to a Photo (gallery vault)
+    // Case 1: key belongs to a Photo (gallery or vault)
     const photo = await prisma.photo.findFirst({
         where: { r2Key: key },
         select: {
             visibility: true,
+            storageProvider: true,
+            exclusions: { select: { roleId: true } },
+            unlocks: { select: { user: { select: { email: true } } } },
             album: {
                 select: {
+                    parentId: true,
+                    slug: true,
                     visibility: true,
                     permissions: { select: { user: { select: { email: true } } } },
                     roleAccess: {
                         select: {
+                            roleId: true,
                             role: {
                                 select: {
                                     name: true,
+                                    isPayAsYouGo: true,
                                     assignments: { select: { expiresAt: true, user: { select: { email: true } } } },
                                 },
                             },
@@ -69,32 +70,78 @@ async function authorizeKeyAccess(key: string, session: any): Promise<boolean> {
     });
 
     if (photo) {
-        if (photo.visibility === "hidden") return false;
+        const resolvedProvider = (photo.storageProvider as Provider) || "r2";
+        if (owner) return { authorized: true, provider: resolvedProvider };
+
+        const isRootVault = photo.album.parentId === null && photo.album.slug === "vault";
+        if (photo.visibility === "hidden" || isRootVault || photo.album.visibility === "archived") {
+            return { authorized: false };
+        }
         const album = photo.album;
-        if (album.visibility === "public") return true;
-        if (!userEmail) return false;
-        if (album.permissions.some(p => p.user?.email === userEmail)) return true;
-        const now = new Date();
-        return album.roleAccess.some(ra =>
-            ra.role.name === "viewer" ||
-            ra.role.assignments.some(a => a.user?.email === userEmail && (!a.expiresAt || a.expiresAt > now))
-        );
+        if (album.visibility === "public") return { authorized: true, provider: resolvedProvider };
+        if (!userEmail) return { authorized: false };
+        if (album.permissions.some(p => p.user?.email?.toLowerCase() === userEmail)) {
+            return { authorized: true, provider: resolvedProvider };
+        }
+
+        const excludedRoleIds = new Set(photo.exclusions.map(e => e.roleId));
+        const activeUnexcludedRoles = album.roleAccess.filter(ra => {
+            if (excludedRoleIds.has(ra.roleId)) return false;
+            if (ra.role.name === "viewer") return true;
+            return ra.role.assignments.some(a =>
+                a.user?.email?.toLowerCase() === userEmail && (!a.expiresAt || a.expiresAt > now)
+            );
+        });
+
+        const hasFullAccess = activeUnexcludedRoles.some(ra => !ra.role.isPayAsYouGo);
+        if (hasFullAccess) return { authorized: true, provider: resolvedProvider };
+
+        const hasPaygAccess = activeUnexcludedRoles.some(ra => ra.role.isPayAsYouGo);
+        if (hasPaygAccess) {
+            const isUnlocked = photo.unlocks.some(u => u.user?.email?.toLowerCase() === userEmail);
+            return { authorized: isUnlocked, provider: resolvedProvider };
+        }
+
+        return { authorized: false };
     }
 
     // Case 2: key belongs to a chat Message (messenger media)
     const message = await prisma.message.findFirst({
         where: { mediaKey: key },
-        select: { chat: { select: { userId: true } } },
+        select: { expiresAt: true, chat: { select: { userId: true } } },
     });
 
     if (message) {
-        if (!userEmail) return false;
-        const user = await prisma.user.findUnique({ where: { email: userEmail }, select: { id: true } });
-        return !!user && user.id === message.chat.userId;
+        if (message.expiresAt && message.expiresAt <= now) {
+            return { authorized: false };
+        }
+        if (owner) return { authorized: true, provider: "r2" };
+        if (!userEmail) return { authorized: false };
+        const user = await prisma.user.findUnique({
+            where: { email: userEmail },
+            select: { id: true, role: true },
+        });
+        return {
+            authorized: Boolean(user && (user.id === message.chat.userId || user.role === "admin")),
+            provider: "r2",
+        };
     }
 
-    // Unknown key — don't silently serve it
-    return false;
+    // Case 3: key belongs to a Feed Post media attachment
+    const post = await prisma.post.findFirst({
+        where: {
+            mediaKeys: { has: key },
+            archivedAt: null,
+            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+        select: { id: true },
+    });
+    if (post) {
+        return { authorized: Boolean(owner || userEmail), provider: "r2" };
+    }
+
+    if (owner) return { authorized: true };
+    return { authorized: false };
 }
 
 export async function GET(req: Request) {
@@ -103,20 +150,20 @@ export async function GET(req: Request) {
 
     const { searchParams } = new URL(req.url);
     const key = searchParams.get("key");
-    const provider = searchParams.get("provider") || "r2";
+    const requestedProvider = (searchParams.get("provider") as Provider) || "r2";
     const direct = searchParams.get("direct");
 
     if (!key) return NextResponse.json({ error: "Missing key" }, { status: 400 });
 
-    const authorized = await authorizeKeyAccess(key, session);
+    const { authorized, provider: dbProvider } = await authorizeKeyAccess(key, session);
     if (!authorized) {
         return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
+    const provider: Provider = dbProvider || requestedProvider;
+
     try {
-        const url = provider === "oracle"
-            ? await getOracleDownloadUrl(key)
-            : await getR2DownloadUrl(key);
+        const url = await getStorage(provider).getDownloadUrl(key);
         if (direct === "1" || direct === "true") {
             const expectedHost = getAllowedHost(provider);
             let targetHost: string;
@@ -132,7 +179,7 @@ export async function GET(req: Request) {
             return NextResponse.redirect(url);
         }
         return NextResponse.json({ url });
-    } catch (error: any) {
+    } catch {
         return NextResponse.json({ error: "Failed to generate URL" }, { status: 500 });
     }
 }

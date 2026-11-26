@@ -58,14 +58,14 @@ function UserPickerModal({ onClose, onSelect }: { onClose: () => void; onSelect:
                 <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
                     <h3 className="font-bold text-sm tracking-tight">New Conversation</h3>
                     <button onClick={onClose} className="text-zinc-500 hover:text-white transition">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                     </button>
                 </div>
 
                 {/* Search */}
                 <div className="px-4 py-2 border-b border-white/5">
                     <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2 focus-within:border-indigo-500/50 transition-all">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-zinc-500 shrink-0"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-zinc-500 shrink-0"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
                         <input
                             ref={inputRef}
                             type="text"
@@ -116,6 +116,7 @@ export default function MessagesClient({ isAdmin, currentUserId }: { isAdmin: bo
     const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [showPicker, setShowPicker] = useState(false);
+    const hasAutoSelectedRef = useRef(false);
 
     const fetchChats = async () => {
         try {
@@ -123,8 +124,9 @@ export default function MessagesClient({ isAdmin, currentUserId }: { isAdmin: bo
             if (res.ok) {
                 const data = await res.json();
                 setChats(data);
-                if (data.length > 0 && !selectedChatId && !isAdmin) {
-                    setSelectedChatId(data[0].id);
+                if (data.length > 0 && !hasAutoSelectedRef.current && !isAdmin) {
+                    hasAutoSelectedRef.current = true;
+                    setSelectedChatId(prev => prev ?? data[0].id);
                 }
             }
         } finally {
@@ -133,15 +135,22 @@ export default function MessagesClient({ isAdmin, currentUserId }: { isAdmin: bo
     };
 
     useEffect(() => {
+        const applyHash = () => {
+            const hash = window.location.hash.replace('#', '');
+            if (hash) {
+                hasAutoSelectedRef.current = true;
+                setSelectedChatId(hash);
+            }
+        };
+        applyHash();
+        window.addEventListener('hashchange', applyHash);
         fetchChats();
         const intv = setInterval(fetchChats, 10000);
-        return () => clearInterval(intv);
+        return () => {
+            window.removeEventListener('hashchange', applyHash);
+            clearInterval(intv);
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    useEffect(() => {
-        const hash = window.location.hash.replace('#', '');
-        if (hash) setSelectedChatId(hash);
     }, []);
 
     const selectedChat = chats.find(c => c.id === selectedChatId);
@@ -201,7 +210,7 @@ export default function MessagesClient({ isAdmin, currentUserId }: { isAdmin: bo
                                 onClick={() => setShowPicker(true)}
                                 className="flex items-center gap-1.5 text-[10px] bg-white text-black px-3 py-1.5 rounded-full font-bold uppercase tracking-wider hover:bg-zinc-200 transition"
                             >
-                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
                                 New Chat
                             </button>
                         ) : (
@@ -220,7 +229,7 @@ export default function MessagesClient({ isAdmin, currentUserId }: { isAdmin: bo
                             </div>
                         ) : chats.length === 0 ? (
                             <div className="p-8 text-center text-zinc-500">
-                                <svg className="w-12 h-12 mx-auto mb-3 opacity-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                                <svg className="w-12 h-12 mx-auto mb-3 opacity-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
                                 <p className="text-sm">{isAdmin ? "No conversations yet" : "No active conversations"}</p>
                                 {isAdmin && (
                                     <button onClick={() => setShowPicker(true)} className="mt-3 text-xs text-indigo-400 hover:text-indigo-300 transition underline">
@@ -246,8 +255,8 @@ export default function MessagesClient({ isAdmin, currentUserId }: { isAdmin: bo
                                                     <h3 className="font-bold text-sm truncate flex items-center gap-1.5">
                                                         {isAdmin ? (chat.user?.name || "Anonymous User") : "Admin Support"}
                                                         {chat.user?.lastSeen && (
-                                                            <span 
-                                                                className={`w-1.5 h-1.5 rounded-full shrink-0 ${new Date().getTime() - new Date(chat.user.lastSeen).getTime() < 5 * 60000 ? 'bg-green-500' : 'bg-zinc-500'}`} 
+                                                            <span
+                                                                className={`w-1.5 h-1.5 rounded-full shrink-0 ${new Date().getTime() - new Date(chat.user.lastSeen).getTime() < 5 * 60000 ? 'bg-green-500' : 'bg-zinc-500'}`}
                                                                 title={`Last seen: ${new Date(chat.user.lastSeen).toLocaleString()}`}
                                                             />
                                                         )}
@@ -280,6 +289,7 @@ export default function MessagesClient({ isAdmin, currentUserId }: { isAdmin: bo
                     {selectedChatId ? (
                         <div className="w-full h-full animate-in fade-in zoom-in-95 duration-300">
                             <MessengerPanel
+                                key={selectedChatId}
                                 chatId={selectedChatId}
                                 currentUserId={currentUserId}
                                 isAdmin={isAdmin}
@@ -290,7 +300,7 @@ export default function MessagesClient({ isAdmin, currentUserId }: { isAdmin: bo
                         </div>
                     ) : (
                         <div className="w-full h-full flex flex-col items-center justify-center text-zinc-500">
-                            <svg className="w-20 h-20 mb-4 opacity-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                            <svg className="w-20 h-20 mb-4 opacity-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" /></svg>
                             <p className="font-mono tracking-widest uppercase text-xs mb-3">Select a conversation</p>
                             {isAdmin && (
                                 <button

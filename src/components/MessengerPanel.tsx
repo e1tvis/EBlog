@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-vars, react-hooks/exhaustive-deps, @next/next/no-img-element */
+/* eslint-disable react-hooks/exhaustive-deps, @next/next/no-img-element */
 "use client";
 
 import { useState, useEffect, useRef } from "react";
@@ -47,9 +47,11 @@ export default function MessengerPanel({
     const [text, setText] = useState("");
     const [loading, setLoading] = useState(true);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const prevMessageCountRef = useRef(0);
     const [isRecording, setIsRecording] = useState(false);
     const mediaRecorder = useRef<MediaRecorder | null>(null);
-    const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+    const activeStreamRef = useRef<MediaStream | null>(null);
+
     const getMediaUrl = (mediaKey: string | null) => {
         if (!mediaKey) return "";
         return `/api/photos/download?key=${encodeURIComponent(mediaKey)}&direct=1`;
@@ -70,13 +72,30 @@ export default function MessengerPanel({
     };
 
     useEffect(() => {
+        prevMessageCountRef.current = 0;
+        setLoading(true);
         fetchMessages();
         const intv = setInterval(fetchMessages, 3000);
         return () => clearInterval(intv);
     }, [chatId]);
 
+    // Stop any active microphone stream on unmount
     useEffect(() => {
-        scrollToBottom();
+        return () => {
+            if (mediaRecorder.current && mediaRecorder.current.state !== "inactive") {
+                try { mediaRecorder.current.stop(); } catch { /* ignore */ }
+            }
+            activeStreamRef.current?.getTracks().forEach(t => t.stop());
+            activeStreamRef.current = null;
+        };
+    }, []);
+
+    // Only auto-scroll when new messages arrive
+    useEffect(() => {
+        if (messages.length > prevMessageCountRef.current) {
+            scrollToBottom();
+        }
+        prevMessageCountRef.current = messages.length;
     }, [messages]);
 
     const scrollToBottom = () => {
@@ -89,14 +108,20 @@ export default function MessengerPanel({
         setText("");
 
         try {
-            await fetch("/api/messages", {
+            const res = await fetch("/api/messages", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ chatId, type: "text", body }),
             });
+            if (!res.ok) {
+                toast.error("Failed to send message");
+                setText(body);
+                return;
+            }
             fetchMessages();
-        } catch (e) {
+        } catch {
             toast.error("Failed to send message");
+            setText(body);
         }
     };
 
@@ -107,7 +132,16 @@ export default function MessengerPanel({
         } else {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+                activeStreamRef.current = stream;
+
+                const preferredTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+                const supportedMime = typeof MediaRecorder.isTypeSupported === "function"
+                    ? preferredTypes.find(t => MediaRecorder.isTypeSupported(t)) || ""
+                    : "";
+
+                const recorder = supportedMime
+                    ? new MediaRecorder(stream, { mimeType: supportedMime })
+                    : new MediaRecorder(stream);
                 mediaRecorder.current = recorder;
 
                 let chunks: Blob[] = [];
@@ -116,24 +150,29 @@ export default function MessengerPanel({
                 };
 
                 recorder.onstop = async () => {
-                    const blob = new Blob(chunks, { type: "audio/webm" });
-                    setAudioChunks([]);
+                    const mimeType = recorder.mimeType || supportedMime || "audio/webm";
+                    const ext = mimeType.includes("mp4") ? "m4a" : mimeType.includes("ogg") ? "ogg" : "webm";
+                    const blob = new Blob(chunks, { type: mimeType });
                     chunks = [];
                     stream.getTracks().forEach((t) => t.stop());
+                    activeStreamRef.current = null;
+
+                    if (blob.size === 0) return;
 
                     const formData = new FormData();
-                    formData.append("file", new File([blob], "voice.webm", { type: "audio/webm" }));
+                    formData.append("file", new File([blob], `voice.${ext}`, { type: mimeType }));
 
                     toast.promise(
                         fetch("/api/messages/upload", { method: "POST", body: formData })
                             .then(async (res) => {
-                                if (!res.ok) throw new Error();
+                                if (!res.ok) throw new Error("Upload failed");
                                 const { key } = await res.json();
-                                return fetch("/api/messages", {
+                                const msgRes = await fetch("/api/messages", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({ chatId, type: "voice", mediaKey: key }),
                                 });
+                                if (!msgRes.ok) throw new Error("Message create failed");
                             })
                             .then(() => fetchMessages()),
                         {
@@ -146,7 +185,9 @@ export default function MessengerPanel({
 
                 recorder.start();
                 setIsRecording(true);
-            } catch (err) {
+            } catch {
+                activeStreamRef.current?.getTracks().forEach(t => t.stop());
+                activeStreamRef.current = null;
                 toast.error("Microphone access denied or unavailable");
             }
         }
@@ -154,7 +195,12 @@ export default function MessengerPanel({
 
     const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
+        e.target.value = "";
         if (!file) return;
+        if (file.size > 4 * 1024 * 1024) {
+            toast.error("Image exceeds 4MB limit");
+            return;
+        }
 
         const formData = new FormData();
         formData.append("file", file);
@@ -162,13 +208,14 @@ export default function MessengerPanel({
         toast.promise(
             fetch("/api/messages/upload", { method: "POST", body: formData })
                 .then(async (res) => {
-                    if (!res.ok) throw new Error();
+                    if (!res.ok) throw new Error("Upload failed");
                     const { key } = await res.json();
-                    return fetch("/api/messages", {
+                    const msgRes = await fetch("/api/messages", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ chatId, type: "image", mediaKey: key }),
                     });
+                    if (!msgRes.ok) throw new Error("Message create failed");
                 })
                 .then(() => fetchMessages()),
             {
@@ -195,8 +242,8 @@ export default function MessengerPanel({
                         <h2 className="text-lg font-bold tracking-tight flex items-center gap-2">
                             {isAdmin ? participantName || "User Chat" : "Admin Support"}
                             {participantLastSeen && (
-                                <span 
-                                    className={`w-2 h-2 rounded-full ${new Date().getTime() - new Date(participantLastSeen).getTime() < 5 * 60000 ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-zinc-500'}`} 
+                                <span
+                                    className={`w-2 h-2 rounded-full ${new Date().getTime() - new Date(participantLastSeen).getTime() < 5 * 60000 ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-zinc-500'}`}
                                     title={`Last seen: ${new Date(participantLastSeen).toLocaleString()}`}
                                 />
                             )}

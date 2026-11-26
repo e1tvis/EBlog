@@ -1,4 +1,3 @@
-/* eslint-disable */
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/auth";
@@ -32,9 +31,8 @@ export async function POST(req: Request) {
 
         const { updates } = parsed.data;
 
-        // Perform updates in a transaction
         await prisma.$transaction(
-            updates.map((u: { id: string, sortOrder: number }) =>
+            updates.map((u: { id: string; sortOrder: number }) =>
                 prisma.photo.update({
                     where: { id: u.id },
                     data: { sortOrder: u.sortOrder },
@@ -42,9 +40,7 @@ export async function POST(req: Request) {
             )
         );
 
-        // @ts-ignore
         revalidateTag('photos', { expire: 0 });
-        // @ts-ignore
         revalidateTag('albums', { expire: 0 });
         return NextResponse.json({ success: true });
     } catch (err: unknown) {

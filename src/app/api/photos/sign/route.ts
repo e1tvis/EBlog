@@ -1,13 +1,10 @@
-/* eslint-disable prefer-const */
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/auth";
-import { getUploadUrl } from "@/lib/r2";
-import { getOracleUploadUrl } from "@/lib/oracle";
+import { getStorage, Provider } from "@/lib/storage";
 import { prisma } from "@/lib/prisma";
 import { isOwner } from "@/lib/auth-utils";
 
-// Fallback MIME types for files where the browser returns empty file.type
 function resolveContentType(contentType: string | undefined, filename: string): string {
     if (contentType) return contentType;
     const ext = filename.split('.').pop()?.toLowerCase();
@@ -23,7 +20,6 @@ function resolveContentType(contentType: string | undefined, filename: string): 
         tiff: 'image/tiff',
         bmp: 'image/bmp',
         svg: 'image/svg+xml',
-        // Video types
         mp4: 'video/mp4',
         webm: 'video/webm',
         mov: 'video/quicktime',
@@ -50,8 +46,7 @@ export async function POST(req: Request) {
 
         const contentType = resolveContentType(rawContentType, filename);
 
-        // Build slug path matching the upload route pattern
-        let pathParts: string[] = [];
+        const pathParts: string[] = [];
         let currentAlbumId: string | null = albumId;
 
         while (currentAlbumId) {
@@ -67,9 +62,8 @@ export async function POST(req: Request) {
         const folderPath = pathParts.length > 0 ? pathParts.join("/") : "uploads";
         const key = `${folderPath}/${Date.now()}-${filename.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
 
-        const uploadUrl = provider === "oracle"
-            ? await getOracleUploadUrl(key, contentType)
-            : await getUploadUrl(key, contentType);
+        const storageProvider: Provider = provider === "oracle" ? "oracle" : "r2";
+        const uploadUrl = await getStorage(storageProvider).getUploadUrl(key, contentType);
 
         return NextResponse.json({ uploadUrl, key });
     } catch (error) {

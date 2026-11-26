@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, prefer-const */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/auth";
@@ -16,8 +16,6 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // ✅ FIX: 20 uploads/min/IP — Sharp + HEIC decode is CPU-expensive,
-    // nothing was stopping a single client from hammering this route.
     const ip = getClientIp(req);
     const { allowed, resetAt } = rateLimit(`upload:${ip}`, 20, 60_000);
     if (!allowed) {
@@ -41,11 +39,9 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "R2 uploads use presigned URLs — call /api/photos/sign" }, { status: 400 });
         }
 
-        // Build slug path for the key
-        let pathParts: string[] = [];
+        const pathParts: string[] = [];
         let currentAlbumId: string | null = albumId;
 
-        // Traverse up to root to build path: root/child/subchild
         while (currentAlbumId) {
             const album: { id: string; slug: string; parentId: string | null } | null = await prisma.album.findUnique({
                 where: { id: currentAlbumId },
@@ -56,7 +52,6 @@ export async function POST(req: Request) {
             currentAlbumId = album.parentId;
         }
 
-        // If for some reason album not found, fallback to 'uploads'
         const folderPath = pathParts.length > 0 ? pathParts.join("/") : "uploads";
         const key = `${folderPath}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
 
@@ -75,19 +70,17 @@ export async function POST(req: Request) {
         const mediaType = isVideo ? "video" : (isImage ? "image" : "file");
 
         if (mediaType === "image") {
-             const meta = await processImageMetadata(Buffer.from(body), albumId);
-             lat = meta.lat;
-             lng = meta.lng;
-             takenAt = meta.takenAt;
-             takenAtRaw = meta.takenAtRaw;
-             phash = meta.phash;
-             duplicateWarning = meta.isDuplicate;
+            const meta = await processImageMetadata(Buffer.from(body), albumId);
+            lat = meta.lat;
+            lng = meta.lng;
+            takenAt = meta.takenAt;
+            takenAtRaw = meta.takenAtRaw;
+            phash = meta.phash;
+            duplicateWarning = meta.isDuplicate;
         }
 
-        // ✅ FIX: route through the storage abstraction instead of the Oracle SDK directly
         await getStorage("oracle").putObject(key, body, file.type);
 
-        // Save metadata
         const photo = await prisma.photo.create({
             data: {
                 albumId,

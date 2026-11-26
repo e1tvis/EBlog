@@ -3,6 +3,33 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { isOwner } from "@/lib/auth-utils";
+import { getStorage } from "@/lib/storage";
+
+async function resolveRoleIds(
+    rawIds: string[] = [],
+    rawNames: string[] = []
+): Promise<string[]> {
+    const combined = [...rawIds, ...rawNames].map(s => s.trim()).filter(Boolean);
+    if (combined.length === 0) return [];
+
+    const roles = await prisma.role.findMany({
+        select: { id: true, name: true },
+    });
+
+    const idSet = new Set<string>();
+    const lowerMap = new Map(roles.map(r => [r.name.toLowerCase(), r.id]));
+    const existingIds = new Set(roles.map(r => r.id));
+
+    for (const token of combined) {
+        if (existingIds.has(token)) {
+            idSet.add(token);
+        } else {
+            const byName = lowerMap.get(token.toLowerCase());
+            if (byName) idSet.add(byName);
+        }
+    }
+    return Array.from(idSet);
+}
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
     const session = await getServerSession(authOptions);
@@ -12,7 +39,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
     try {
         const { id } = await params;
-        const { body, expiresAt, includeRoleIds = [], excludeRoleIds = [] } = await req.json();
+        const {
+            body,
+            expiresAt,
+            includeRoleIds: rawIncludeIds = [],
+            excludeRoleIds: rawExcludeIds = [],
+            filter,
+        } = await req.json();
+
+        const [includeRoleIds, excludeRoleIds] = await Promise.all([
+            resolveRoleIds(rawIncludeIds, filter?.includeRoles || []),
+            resolveRoleIds(rawExcludeIds, filter?.excludeRoles || []),
+        ]);
 
         const post = await prisma.post.update({
             where: { id },
@@ -36,7 +74,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }
 }
 
-export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
     const session = await getServerSession(authOptions);
     if (!isOwner(session)) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -45,14 +83,19 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     try {
         const { id } = await params;
 
-        // Archive if not archived, hard delete if already archived
         const post = await prisma.post.findUnique({ where: { id } });
-        
+
         if (!post) {
             return NextResponse.json({ error: "Post not found" }, { status: 404 });
         }
 
         if (post.archivedAt) {
+            if (post.mediaKeys && post.mediaKeys.length > 0) {
+                const storage = getStorage("r2");
+                await Promise.allSettled(
+                    post.mediaKeys.map(key => storage.deleteObject(key))
+                );
+            }
             await prisma.post.delete({ where: { id } });
             return NextResponse.json({ deleted: true });
         } else {

@@ -11,11 +11,13 @@ export default async function MessagesPage() {
     const isOwner = checkIsOwner(session);
 
     const dbUser = await prisma.user.findUnique({
-        where: { email: session.user.email },
-        select: { id: true }
+        where: { email: session.user.email.toLowerCase() },
+        select: { id: true, role: true }
     });
 
+    const isAdmin = isOwner || dbUser?.role === "admin";
+
     return (
-        <MessagesClient isAdmin={isOwner} currentUserId={dbUser?.id || ""} />
+        <MessagesClient isAdmin={isAdmin} currentUserId={dbUser?.id || ""} />
     );
 }

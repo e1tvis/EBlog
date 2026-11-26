@@ -40,13 +40,14 @@ export async function createNotification(params: CreateNotificationParams): Prom
 
 /**
  * Notify all users in a list (e.g. all eligible feed subscribers).
- * Fires in parallel, non-blocking.
+ * Deduplicates recipient userIds in memory.
  */
 export async function createBulkNotifications(
     userIds: string[],
     params: Omit<CreateNotificationParams, 'userId'>
 ): Promise<void> {
-    const filtered = params.actorId ? userIds.filter(id => id !== params.actorId) : userIds;
+    const uniqueIds = Array.from(new Set(userIds));
+    const filtered = params.actorId ? uniqueIds.filter(id => id !== params.actorId) : uniqueIds;
     if (filtered.length === 0) return;
 
     try {

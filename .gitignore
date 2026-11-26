@@ -51,3 +51,4 @@ next-env.d.ts
 /prisma_validate.txt
 /rtag-files.txt
 /tsc*.txt
+.neon

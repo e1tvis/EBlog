@@ -15,30 +15,31 @@ L.Icon.Default.mergeOptions({
     shadowUrl: markerShadow.src,
 });
 
-function LocationPicker({ onSelect, current }: { onSelect: (lat: number, lng: number) => void, current: {lat: number, lng: number} | null }) {
+function LocationPicker({ onSelect, current }: { onSelect: (lat: number, lng: number) => void, current: { lat: number, lng: number } | null }) {
     useMapEvents({
         click(e) {
             onSelect(e.latlng.lat, e.latlng.lng);
         },
     });
-    
+
     return current ? <Marker position={[current.lat, current.lng]} /> : null;
 }
 
-export default function MapPinInner({ 
-    lat, lng, onLocationSelect 
-}: { 
-    lat: number | null, 
-    lng: number | null, 
-    onLocationSelect: (lat: number, lng: number) => void 
+export default function MapPinInner({
+    lat, lng, onLocationSelect
+}: {
+    lat: number | null,
+    lng: number | null,
+    onLocationSelect: (lat: number, lng: number) => void
 }) {
     const defaultCenter: [number, number] = [20, 0];
-    const initialCenter: [number, number] = lat && lng ? [lat, lng] : defaultCenter;
+    const hasCoords = lat !== null && lng !== null;
+    const initialCenter: [number, number] = hasCoords ? [lat, lng] : defaultCenter;
 
     return (
-        <MapContainer 
-            center={initialCenter} 
-            zoom={lat && lng ? 12 : 2} 
+        <MapContainer
+            center={initialCenter}
+            zoom={hasCoords ? 12 : 2}
             style={{ height: '100%', width: '100%', background: '#0a0a0a' }}
             scrollWheelZoom={true}
         >
@@ -46,9 +47,9 @@ export default function MapPinInner({
                 attribution='&copy; <a href="https://carto.com/">CARTO</a>'
                 url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             />
-            <LocationPicker 
-                current={lat && lng ? { lat, lng } : null} 
-                onSelect={onLocationSelect} 
+            <LocationPicker
+                current={hasCoords ? { lat, lng } : null}
+                onSelect={onLocationSelect}
             />
         </MapContainer>
     );

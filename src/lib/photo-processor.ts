@@ -12,14 +12,32 @@ export interface ImageMetadataResult {
     duplicateOf?: string;
 }
 
+function parseExifDate(rawValue: unknown): { date: Date; raw: string } | null {
+    if (!rawValue) return null;
+    if (rawValue instanceof Date) {
+        if (!isNaN(rawValue.getTime())) {
+            return { date: rawValue, raw: rawValue.toISOString() };
+        }
+        return null;
+    }
+    const rawStr = String(rawValue).trim();
+    // Convert EXIF "YYYY:MM:DD HH:MM:SS" format to ISO-like "YYYY-MM-DDTHH:MM:SS"
+    const normalized = rawStr.replace(/^(\d{4}):(\d{2}):(\d{2})\s+/, '$1-$2-$3T');
+    const parsed = new Date(normalized);
+    if (!isNaN(parsed.getTime())) {
+        return { date: parsed, raw: rawStr };
+    }
+    return null;
+}
+
 export async function processImageMetadata(buffer: Buffer | Uint8Array, albumId: string): Promise<ImageMetadataResult> {
-    let lat = null;
-    let lng = null;
-    let takenAt = null;
-    let takenAtRaw = null;
-    let phash = null;
+    let lat: number | null = null;
+    let lng: number | null = null;
+    let takenAt: Date | null = null;
+    let takenAtRaw: string | null = null;
+    let phash: string | null = null;
     let isDuplicate = false;
-    let duplicateOf;
+    let duplicateOf: string | undefined;
 
     // 1. Parse EXIF
     try {
@@ -31,22 +49,14 @@ export async function processImageMetadata(buffer: Buffer | Uint8Array, albumId:
         });
 
         if (exifObj) {
-            if (exifObj.latitude !== undefined && exifObj.longitude !== undefined) {
+            if (Number.isFinite(exifObj.latitude) && Number.isFinite(exifObj.longitude)) {
                 lat = exifObj.latitude;
                 lng = exifObj.longitude;
             }
-            if (exifObj.DateTimeOriginal) {
-                const parsed = new Date(exifObj.DateTimeOriginal);
-                if (!isNaN(parsed.getTime())) {
-                    takenAt = parsed;
-                    takenAtRaw = exifObj.DateTimeOriginal.toString();
-                }
-            } else if (exifObj.CreateDate) {
-                const parsed = new Date(exifObj.CreateDate);
-                if (!isNaN(parsed.getTime())) {
-                    takenAt = parsed;
-                    takenAtRaw = exifObj.CreateDate.toString();
-                }
+            const dateResult = parseExifDate(exifObj.DateTimeOriginal ?? exifObj.CreateDate);
+            if (dateResult) {
+                takenAt = dateResult.date;
+                takenAtRaw = dateResult.raw;
             }
         }
     } catch (err) {
@@ -56,7 +66,7 @@ export async function processImageMetadata(buffer: Buffer | Uint8Array, albumId:
     // 2. Generate pHash & detect duplicates
     try {
         phash = await generatePHash(buffer);
-        
+
         const existingPhotosInAlbum = await prisma.photo.findMany({
             where: { albumId, phash: { not: null } },
             select: { id: true, phash: true, filename: true }

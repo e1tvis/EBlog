@@ -7,6 +7,7 @@
  */
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { getOraclePublicUrl } from "@/lib/oracle";
 
 export type Provider = "r2" | "oracle" | "s3" | "backblaze";
 
@@ -40,11 +41,18 @@ class S3CompatibleProvider implements StorageProvider {
     private client: S3Client;
     private bucket: string;
     private publicBase: string | null;
+    private customPublicUrlResolver?: (key: string) => string | null;
 
-    constructor(client: S3Client, bucket: string, publicBase?: string) {
+    constructor(
+        client: S3Client,
+        bucket: string,
+        publicBase?: string,
+        customPublicUrlResolver?: (key: string) => string | null
+    ) {
         this.client = client;
         this.bucket = bucket;
         this.publicBase = publicBase ?? null;
+        this.customPublicUrlResolver = customPublicUrlResolver;
     }
 
     async getDownloadUrl(key: string, expiresIn = 3600): Promise<string> {
@@ -74,53 +82,71 @@ class S3CompatibleProvider implements StorageProvider {
     }
 
     getPublicUrl(key: string): string | null {
+        if (this.customPublicUrlResolver) {
+            return this.customPublicUrlResolver(key);
+        }
         if (!this.publicBase) return null;
-        return `${this.publicBase.replace(/\/$/, "")}/${key}`;
+        const encodedKey = key.split('/').map(k => encodeURIComponent(k)).join('/');
+        return `${this.publicBase.replace(/\/$/, "")}/${encodedKey}`;
     }
 }
 
 function createR2Provider(): StorageProvider {
     const client = buildS3Client({
         region: "auto",
-        endpoint: process.env.R2_ENDPOINT!,
-        accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+        endpoint: process.env.R2_ENDPOINT || "",
+        accessKeyId: process.env.R2_ACCESS_KEY_ID || "",
+        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
     });
-    return new S3CompatibleProvider(client, process.env.R2_BUCKET_NAME!, process.env.R2_PUBLIC_URL);
+    return new S3CompatibleProvider(client, process.env.R2_BUCKET_NAME || "", process.env.R2_PUBLIC_URL);
 }
 
 function createOracleProvider(): StorageProvider {
     const client = buildS3Client({
         region: process.env.ORACLE_REGION ?? "us-ashburn-1",
-        endpoint: process.env.ORACLE_ENDPOINT!,
-        accessKeyId: process.env.ORACLE_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.ORACLE_SECRET_ACCESS_KEY!,
+        endpoint: process.env.ORACLE_ENDPOINT || "",
+        accessKeyId: process.env.ORACLE_ACCESS_KEY_ID || "",
+        secretAccessKey: process.env.ORACLE_SECRET_ACCESS_KEY || "",
         forcePathStyle: true,
     });
-    return new S3CompatibleProvider(client, process.env.ORACLE_BUCKET_NAME!, process.env.ORACLE_PUBLIC_URL);
+    return new S3CompatibleProvider(
+        client,
+        process.env.ORACLE_BUCKET_NAME || "",
+        process.env.ORACLE_PUBLIC_URL,
+        (key) => {
+            if (process.env.ORACLE_PUBLIC_URL) {
+                const encodedKey = key.split('/').map(k => encodeURIComponent(k)).join('/');
+                return `${process.env.ORACLE_PUBLIC_URL.replace(/\/$/, "")}/${encodedKey}`;
+            }
+            if (process.env.ORACLE_ENDPOINT && process.env.ORACLE_BUCKET_NAME) {
+                return getOraclePublicUrl(key);
+            }
+            return null;
+        }
+    );
 }
 
 function createS3Provider(): StorageProvider {
     const client = buildS3Client({
         region: process.env.AWS_REGION ?? "us-east-1",
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID || "",
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
     });
     const publicBase = process.env.AWS_CLOUDFRONT_URL
         ?? (process.env.AWS_S3_PUBLIC === "true"
             ? `https://${process.env.AWS_S3_BUCKET}.s3.amazonaws.com`
             : undefined);
-    return new S3CompatibleProvider(client, process.env.AWS_S3_BUCKET!, publicBase);
+    return new S3CompatibleProvider(client, process.env.AWS_S3_BUCKET || "", publicBase);
 }
 
 function createBackblazeProvider(): StorageProvider {
     const client = buildS3Client({
         region: process.env.B2_REGION ?? "us-west-004",
-        endpoint: process.env.B2_ENDPOINT!,
-        accessKeyId: process.env.B2_APPLICATION_KEY_ID!,
-        secretAccessKey: process.env.B2_APPLICATION_KEY!,
+        endpoint: process.env.B2_ENDPOINT || "",
+        accessKeyId: process.env.B2_APPLICATION_KEY_ID || "",
+        secretAccessKey: process.env.B2_APPLICATION_KEY || "",
     });
-    return new S3CompatibleProvider(client, process.env.B2_BUCKET_NAME!, process.env.B2_PUBLIC_URL);
+    return new S3CompatibleProvider(client, process.env.B2_BUCKET_NAME || "", process.env.B2_PUBLIC_URL);
 }
 
 const providerMap: Record<Provider, () => StorageProvider> = {

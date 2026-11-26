@@ -3,6 +3,7 @@ import { getSession } from "@/lib/session";
 import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/prisma';
 import { isOwner as checkIsOwner } from '@/lib/auth-utils';
+import { createHmac } from 'crypto';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 
@@ -25,13 +26,13 @@ export default async function VaultPage() {
         redirect('/');
     }
 
-    // Ensure the Secure Vault album exists
+    // Ensure the root Secure Vault album exists
     let vaultAlbum = await prisma.album.findFirst({
-        where: { slug: "vault" },
+        where: { parentId: null, slug: "vault" },
         include: {
             photos: {
                 where: { visibility: { not: 'hidden' } },
-                orderBy: { uploadedAt: "desc" },
+                orderBy: [{ sortOrder: "asc" }, { uploadedAt: "desc" }],
                 select: {
                     id: true, filename: true, r2Key: true, fileSize: true,
                     width: true, height: true, uploadedAt: true,
@@ -47,12 +48,13 @@ export default async function VaultPage() {
             data: {
                 name: "Secure Vault",
                 slug: "vault",
+                parentId: null,
                 visibility: "private"
             },
             include: {
                 photos: {
                     where: { visibility: { not: 'hidden' } },
-                    orderBy: { uploadedAt: "desc" },
+                    orderBy: [{ sortOrder: "asc" }, { uploadedAt: "desc" }],
                     select: {
                         id: true, filename: true, r2Key: true, fileSize: true,
                         width: true, height: true, uploadedAt: true,
@@ -64,35 +66,39 @@ export default async function VaultPage() {
         });
     }
 
-    // Serialize dates for Client components
-    const photosForGrid = vaultAlbum.photos.map((photo: any) => ({
-        id: photo.id,
-        albumId: vaultAlbum.id,
-        filename: photo.filename,
-        fileSize: photo.fileSize,
-        uploadedAt: photo.uploadedAt?.toISOString() || '',
-        thumbnailUrl: `/api/photos/thumbnail?id=${photo.id}&w=400&v=2`,
-        fullUrl: undefined,
-        r2Key: photo.r2Key,
-        storageProvider: photo.storageProvider || 'r2',
-        mediaType: photo.mediaType || 'file',
-        duration: photo.duration ?? null,
-        width: photo.width,
-        height: photo.height,
-        caption: photo.caption ?? null,
-        sortOrder: photo.sortOrder ?? null,
-        liked: false,
-        likeCount: 0,
-        isBlurred: false,
-        unlockPrice: null,
-    }));
+    const secret = process.env.NEXTAUTH_SECRET || "";
 
-    // Calculate Statistics
+    const photosForGrid = vaultAlbum.photos.map((photo: any) => {
+        const sig = secret
+            ? createHmac('sha256', secret).update(`${photo.id}_false`).digest('hex')
+            : '';
+        return {
+            id: photo.id,
+            albumId: vaultAlbum.id,
+            filename: photo.filename,
+            fileSize: photo.fileSize,
+            uploadedAt: photo.uploadedAt?.toISOString() || '',
+            thumbnailUrl: `/api/photos/thumbnail?id=${photo.id}&w=400&v=2&blur=false&sig=${sig}`,
+            fullUrl: undefined,
+            r2Key: photo.r2Key,
+            storageProvider: photo.storageProvider || 'r2',
+            mediaType: photo.mediaType || 'file',
+            duration: photo.duration ?? null,
+            width: photo.width,
+            height: photo.height,
+            caption: photo.caption ?? null,
+            sortOrder: photo.sortOrder ?? null,
+            liked: false,
+            likeCount: 0,
+            isBlurred: false,
+            unlockPrice: null,
+        };
+    });
+
     const totalFiles = vaultAlbum.photos.length;
     const totalBytes = vaultAlbum.photos.reduce((sum, p) => sum + Number(p.fileSize), 0);
     const storageText = formatBytes(totalBytes);
 
-    // Categories breakdown
     let archivesCount = 0;
     let docsCount = 0;
 

@@ -40,6 +40,7 @@ export default function UploadModal({ albumId }: { albumId: string }) {
         if (e.target.files && e.target.files.length > 0) {
             setFiles(prev => [...prev, ...Array.from(e.target.files!)]);
         }
+        e.target.value = "";
     };
 
     const removeFile = (index: number) => {
@@ -55,20 +56,20 @@ export default function UploadModal({ albumId }: { albumId: string }) {
             for (let i = 0; i < files.length; i++) {
                 let file = files[i];
                 const isVideo = file.type.startsWith('video/');
-                const isImage = file.type.startsWith('image/');
+                const isImage = file.type.startsWith('image/') || /\.heic$/i.test(file.name);
                 const mediaType = isVideo ? "video" : (isImage ? "image" : "file");
                 setProgress({ current: i + 1, total: files.length, filename: file.name });
 
                 // HEIC can't be decoded on Vercel (no HEVC plugin) — convert client-side (images only)
                 if (isImage && /\.heic$/i.test(file.name)) {
                     setProgress({ current: i + 1, total: files.length, filename: `Converting ${file.name}…` });
-                    const jpegBlob = await heic2any({ blob: file, toType: "image/jpeg", quality: 1.0 }) as Blob;
+                    const rawBlob = await heic2any({ blob: file, toType: "image/jpeg", quality: 1.0 });
+                    const jpegBlob = Array.isArray(rawBlob) ? rawBlob[0] : rawBlob;
                     const jpegName = file.name.replace(/\.heic$/i, ".jpg");
                     file = new File([jpegBlob], jpegName, { type: "image/jpeg" });
                 }
 
                 if (provider === "r2") {
-                    // Presigned URL flow: browser uploads directly to R2
                     const signRes = await fetch("/api/photos/sign", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
@@ -85,7 +86,6 @@ export default function UploadModal({ albumId }: { albumId: string }) {
                     }
                     const { uploadUrl, key } = await signRes.json();
 
-                    // Upload directly to R2
                     const uploadRes = await fetch(uploadUrl, {
                         method: "PUT",
                         headers: { "Content-Type": file.type || "application/octet-stream" },
@@ -95,7 +95,6 @@ export default function UploadModal({ albumId }: { albumId: string }) {
                         throw new Error("Direct upload to R2 failed");
                     }
 
-                    // Save metadata
                     const metaRes = await fetch("/api/photos", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
@@ -113,8 +112,7 @@ export default function UploadModal({ albumId }: { albumId: string }) {
                         throw new Error(data.error || "Failed to save photo metadata");
                     }
                 } else {
-                    // Oracle: proxied upload (no CORS support for direct uploads)
-                    const ORACLE_MAX_SIZE = 4 * 1024 * 1024; // 4MB Vercel limit
+                    const ORACLE_MAX_SIZE = 4 * 1024 * 1024;
                     if (file.size > ORACLE_MAX_SIZE) {
                         throw new Error(
                             `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)}MB — Oracle uploads are limited to 4MB on Vercel. Switch to R2 Storage for larger files.`

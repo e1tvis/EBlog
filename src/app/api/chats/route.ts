@@ -1,19 +1,20 @@
-/* eslint-disable */
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { isOwner } from "@/lib/auth-utils";
 
-export async function GET(req: Request) {
+export async function GET() {
     const session = await getServerSession(authOptions);
     if (!session?.user?.email) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const userEmail = session.user.email.toLowerCase();
+
     try {
-        await prisma.user.update({
-            where: { email: session.user.email },
+        await prisma.user.updateMany({
+            where: { email: userEmail },
             data: { lastSeen: new Date() }
         });
 
@@ -32,10 +33,21 @@ export async function GET(req: Request) {
             return NextResponse.json(chats);
         } else {
             const user = await prisma.user.findUnique({
-                where: { email: session.user.email },
-                select: { id: true },
+                where: { email: userEmail },
+                select: { id: true, role: true },
             });
             if (!user) return NextResponse.json([]);
+
+            if (user.role === 'admin') {
+                const chats = await prisma.chat.findMany({
+                    include: {
+                        user: { select: { id: true, name: true, email: true, lastSeen: true } },
+                        messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+                    },
+                    orderBy: { createdAt: 'desc' },
+                });
+                return NextResponse.json(chats);
+            }
 
             const chat = await prisma.chat.findUnique({
                 where: { userId: user.id },
@@ -59,8 +71,7 @@ export async function POST(req: Request) {
     }
 
     try {
-        // If admin passes a targetUserId, open (or create) that user's chat
-        let targetEmail = session.user.email;
+        let targetEmail = session.user.email.toLowerCase();
         if (isOwner(session)) {
             const body = await req.json().catch(() => ({}));
             if (body.targetUserId) {
@@ -68,8 +79,10 @@ export async function POST(req: Request) {
                     where: { id: body.targetUserId },
                     select: { id: true, email: true },
                 });
-                if (!targetUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
-                targetEmail = targetUser.email!;
+                if (!targetUser || !targetUser.email) {
+                    return NextResponse.json({ error: "User not found" }, { status: 404 });
+                }
+                targetEmail = targetUser.email.toLowerCase();
             }
         }
 
@@ -82,13 +95,13 @@ export async function POST(req: Request) {
 
         let chat = await prisma.chat.findUnique({
             where: { userId: user.id },
-            include: { user: { select: { id: true, name: true, email: true } } }
+            include: { user: { select: { id: true, name: true, email: true, lastSeen: true } } }
         });
 
         if (!chat) {
             chat = await prisma.chat.create({
                 data: { userId: user.id },
-                include: { user: { select: { id: true, name: true, email: true } } }
+                include: { user: { select: { id: true, name: true, email: true, lastSeen: true } } }
             });
         }
 
@@ -98,4 +111,3 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Failed to create or get chat" }, { status: 500 });
     }
 }
-
