@@ -1,65 +1,101 @@
-# 🌟 EBlog Modern Photo Gallery v0.3.4
+# EBlog
 
-Welcome to **EBlog**, a beautifully crafted, high-performance photo gallery application built with **Next.js 16** and **Prisma**. Designed with joy for photographers and creatives, it provides a stunning, private workspace to showcase your work without breaking the bank!
+A private, self-hosted photo and video studio built with **Next.js 16**, **React 19**, **Prisma**, and hybrid S3-compatible object storage (**Cloudflare R2** + **Oracle Cloud Object Storage**).
 
-By combining **Cloudflare R2** and **Oracle Cloud**, EBlog unlocks **20GB+ of free cloud storage**, making it the perfect home for your high-resolution memories.
-
----
-
-## ✨ Features & Benefits
-
-- **⚡ Lightning Fast:** Enjoy up to **10x faster** gallery load times with our persistent cloud cache, and a background sync engine that processes images in seconds.
-- **🎥 Premium Viewing:** Native support for stunning **8K vertical video** playback, plus a Pro Lightbox offering **7.5x zoom** and deep EXIF metadata extraction.
-- **💎 Pristine Quality:** Zero-loss **1.0 quality** HEIC-to-JPEG conversion ensures your photos always look exactly as you intended.
-- **☁️ Hybrid Cloud Storage:** Seamlessly scales across multiple cloud providers for maximum free-tier benefits.
-- **🛡️ Custom Privacy & Roles:** Effortlessly manage access with a granular Role-Based Access Control (RBAC) system. Create custom roles like "Family" or "Client" and share specific albums with ease.
-- **🎨 Gorgeous UI:** A dark-mode first, glassmorphism design powered by **Tailwind CSS 4** for a buttery-smooth, immersive browsing experience.
+Designed to store and share full-resolution photos, raw travel albums, vertical/4K+ video, and private vault files with zero social-platform compression and strict role-based access control.
 
 ---
 
-## 🛠️ Built With Love & Modern Tech
+## Features
 
-- **Framework**: Next.js 16 (React 19)
-- **Database**: PostgreSQL via Prisma ORM + Neon
-- **Storage**: Cloudflare R2 & Oracle Cloud Object Storage
-- **Auth**: NextAuth.js (Google & GitHub)
-- **Image Processing**: sharp
-- **Styling**: Tailwind CSS 4
+- **Uncompressed Media & Hybrid Storage** — Direct presigned browser uploads to Cloudflare R2 and proxied uploads to Oracle OCI Object Storage, with live bucket usage tracking and one-click storage sync.
+- **Fast Server-Side Image Pipeline** — Client-side HEIC-to-JPEG conversion (`heic2any`), EXIF date/GPS extraction (`exifr`), perceptual DCT hashing (`pHash`) for duplicate detection, and coalesced `sharp` master thumbnail caching.
+- **Grid, Timeline & Geo-Map Views** — Browse collections in a responsive masonry/grid layout, chronological EXIF timeline, or interactive clustered Leaflet map with manual coordinate pinning.
+- **Immersive Lightbox** — 7.5x pan/zoom viewer, keyboard and swipe navigation, custom video frame thumbnail capture, inline captions, likes, and threaded comments with `@mentions`.
+- **Granular Role-Based Access Control (RBAC)** — Invite-only albums and nested sub-albums, custom color-coded roles with optional expiration windows, per-photo role exclusions, and HMAC-signed thumbnail URLs.
+- **Secure Vault (`/vault`)** — Owner-only isolated storage area for private archives, documents, and proprietary files, completely excluded from gallery indexes.
+- **Feed & Direct Messaging** — Role-targeted announcement feed (`/feed`) with auto-expiring posts, real-time notifications, and built-in 1-on-1 Messenger (`/messages`) supporting text, images, and voice notes.
+- **Dual Theme UI** — Glassmorphic Dark and Satin Silver themes powered by Tailwind CSS 4.
 
 ---
 
-## 🚀 Quick Setup
+## Tech Stack
 
-### 1. External Services
-- **Database**: [Neon.tech](https://neon.tech)
-- **Storage**: Cloudflare R2 (S3 API) + Oracle Cloud (Public Bucket)
-- **Auth**: GitHub and Google OAuth Apps
+| Layer | Technology |
+| :--- | :--- |
+| **Framework** | Next.js 16.1 (App Router, Turbopack, `src/proxy.ts`) |
+| **UI** | React 19, Tailwind CSS 4, Sonner |
+| **Database** | PostgreSQL (Neon Serverless) + Prisma ORM |
+| **Authentication** | NextAuth.js v4 (GitHub & Google OAuth) |
+| **Object Storage** | AWS SDK v3 (`@aws-sdk/client-s3`) — Cloudflare R2 & Oracle OCI |
+| **Media & Maps** | `sharp`, `exifr`, `heic2any`, `leaflet`, `react-leaflet-cluster` |
 
-### 2. Environment Config
-Copy `.env.example` to `.env` and fill in:
-- `OWNER_EMAIL`: Your identifier (e.g., `myusername-git`) for admin rights.
-- `OWNER_USERNAME`: Your identifier base (e.g., `myusername`).
-- `NEXTAUTH_SECRET`: A secure, random 32-character string.
+---
 
-### 3. Blast Off 🚀
+## Getting Started
+
+### 1. Prerequisites
+- **Node.js** 20+
+- **PostgreSQL** database (e.g. [Neon](https://neon.tech))
+- **Cloudflare R2** bucket (and optionally an **Oracle Cloud** S3-compatible bucket)
+- **GitHub** and/or **Google** OAuth credentials
+
+### 2. Environment Variables
+Copy `.env.example` to `.env` and configure the required credentials:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Description |
+| :--- | :--- |
+| `DATABASE_URL` | Pooled PostgreSQL connection string |
+| `DIRECT_URL` | Direct PostgreSQL connection string (used by Prisma migrations) |
+| `NEXTAUTH_SECRET` | Random secret string (minimum 32 characters) |
+| `NEXTAUTH_URL` | Canonical deployment URL (e.g. `http://localhost:3000`) |
+| `GITHUB_ID` / `GITHUB_SECRET` | GitHub OAuth app credentials |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth client credentials |
+| `OWNER_USERNAME` | Owner's GitHub username (grants full admin access) |
+| `OWNER_EMAIL` | Owner identifier (`<github-login>-git` or Google email) |
+| `R2_ENDPOINT` / `R2_BUCKET_NAME` | Cloudflare R2 S3 API endpoint and bucket name |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | Cloudflare R2 API token credentials |
+| `ORACLE_*` | *(Optional)* Oracle OCI Object Storage S3-compatible credentials |
+| `CRON_SECRET` | *(Optional)* Bearer secret for `/api/cron/cleanup` |
+
+### 3. Install & Run
+
 ```bash
 npm install
-npx prisma db push
+npx prisma migrate deploy
 npm run dev
+```
+
+Open `http://localhost:3000` in your browser.
+
+---
+
+## Project Structure
+
+```text
+├── prisma/               # Prisma schema and SQL migrations
+├── src/
+│   ├── app/              # Next.js App Router pages & API routes
+│   │   ├── admin/        # Role manager & archived posts
+│   │   ├── api/          # REST handlers (photos, albums, sync, roles, feed, chat, cron)
+│   │   ├── feed/         # Role-filtered post feed
+│   │   ├── gallery/      # Collections & nested album routes
+│   │   ├── messages/     # Direct messaging client
+│   │   └── vault/        # Owner-only Secure Vault
+│   ├── components/       # Lightbox, PhotoGrid, Map, Messenger, UploadModal, Admin UI
+│   ├── lib/              # Storage abstraction, Sharp pHash/EXIF, cached DB queries, RBAC
+│   ├── auth.ts           # NextAuth configuration & user provisioning
+│   ├── instrumentation.ts# Cold-start environment validation
+│   └── proxy.ts          # Next.js 16 auth route guard
+└── next.config.ts        # Security headers, CSP, and build config
 ```
 
 ---
 
-## 🔒 Simple Administration
+## License
 
-As the owner, you get full control:
-- **Manage Roles**: Create custom access levels and color-coded badges.
-- **Share Securely**: Batch-grant access to entire collections instantly.
-- **Stay Private**: Everything is invite-only by default.
-
-## 📄 License
-Personal Use Only. Commercial rights reserved.
-
-
- 
- 
+All rights reserved. Personal and authorized use only.
